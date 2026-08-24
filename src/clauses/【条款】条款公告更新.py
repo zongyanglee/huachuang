@@ -751,11 +751,11 @@ def extract_actual_down_fields(row, text):
     if floor_price is None:
         for search_space in search_spaces:
             twenty_day_match = re.search(
-                r"(?:前)?二十个交易日[^。；，]{0,100}?交易均价(?:为|[:：])?[（(]?(?:人民币)?([0-9]+(?:\.[0-9]+)?)元/股",
+                r"(?:前)?二十个交易日[^。；，]{0,100}?交易均价(?:为|[:：])?[（(]?(?:即|约)?(?:人民币)?([0-9]+(?:\.[0-9]+)?)元/股",
                 search_space,
             )
             previous_day_match = re.search(
-                r"前(?:一|一个)交易日[^。；，]{0,100}?交易均价(?:为|[:：])?[（(]?(?:人民币)?([0-9]+(?:\.[0-9]+)?)元/股",
+                r"前(?:一|一个)交易日[^。；，]{0,100}?交易均价(?:为|[:：])?[（(]?(?:即|约)?(?:人民币)?([0-9]+(?:\.[0-9]+)?)元/股",
                 search_space,
             )
             if twenty_day_match and previous_day_match:
@@ -764,7 +764,7 @@ def extract_actual_down_fields(row, text):
             avg_prices = [
                 float(value)
                 for value in re.findall(
-                    r"均价(?:为|[:：])?[（(]?(?:人民币)?([0-9]+(?:\.[0-9]+)?)元/股",
+                    r"均价(?:为|[:：])?[（(]?(?:即|约)?(?:人民币)?([0-9]+(?:\.[0-9]+)?)元/股",
                     search_space,
                 )
             ]

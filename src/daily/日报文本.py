@@ -17,11 +17,12 @@ warnings.filterwarnings('ignore', message='Unknown extension is not supported.*'
 
 MMDD_today = str(time.strftime("%m%d", time.localtime()))
 YYYYMMDD_today = str(time.strftime("%Y%m%d", time.localtime()))
-folder_name = MMDD_today + '数据更新'
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+folder_name = WORKSPACE_ROOT / 'runs' / 'daily' / f'{MMDD_today}数据更新'
 
 # 日报所有行情描述统一使用非剔妖统计口径。
-filename = Path(f'【华创固收】转债日报底稿-{YYYYMMDD_today}-快照1.xlsx').resolve()
-market_stats_path = (Path(folder_name) / f'{MMDD_today}数据更新（清理后）统计.xlsx').resolve()
+filename = WORKSPACE_ROOT / f'【华创固收】转债日报底稿-{YYYYMMDD_today}-快照1.xlsx'
+market_stats_path = folder_name / f'{MMDD_today}数据更新（清理后）统计.xlsx'
 
 for input_path in (filename, market_stats_path):
     if not input_path.exists():
