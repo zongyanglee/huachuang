@@ -1,0 +1,28 @@
+{
+  "schema_version": "2.6.0",
+  "rename_map": {
+    "近1日均价": "正股近1日均价",
+    "近20日均价": "正股近20日均价"
+  },
+  "monthly_files": 140,
+  "monthly_rows_before": 2245568,
+  "monthly_rows_after": 2245568,
+  "value_validation": {
+    "近1日均价": {
+      "new_name": "正股近1日均价",
+      "nonnull_before": 2209341,
+      "nonnull_after": 2209341,
+      "zero_after": 0,
+      "value_mismatch": 0
+    },
+    "近20日均价": {
+      "new_name": "正股近20日均价",
+      "nonnull_before": 2222438,
+      "nonnull_after": 2222438,
+      "zero_after": 0,
+      "value_mismatch": 0
+    }
+  },
+  "old_parquet_fingerprint": "7c5fb9c5798475403b941581f2de7649",
+  "new_parquet_fingerprint": "288277ea13df6ccb92e11ca7c7c15725"
+}

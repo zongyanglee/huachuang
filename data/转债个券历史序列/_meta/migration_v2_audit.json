@@ -1,0 +1,1163 @@
+{
+  "schema_version": "2.2.0",
+  "source_root": "D:\\JupyterFiles\\huachuang\\转债个券历史序列",
+  "monthly_files": 140,
+  "master_rows": 998,
+  "index_observations": 73569,
+  "metric_observations": {
+    "余额": 755088,
+    "收盘价": 1242976,
+    "平价": 744947,
+    "转股溢价率": 736800,
+    "纯债价值": 737702,
+    "纯债溢价率": 736272,
+    "平价底价溢价率": 737483,
+    "YTM": 750459,
+    "换手率": 730643,
+    "成交量": 730647,
+    "成交额": 730484,
+    "涨跌幅": 726482,
+    "剩余期限": 750217,
+    "隐含波动率": 675594,
+    "主体评级": 1634796,
+    "债项评级": 1384800,
+    "正股收盘价": 2232222,
+    "正股20日波动率": 2181574,
+    "累计转股比例": 1096014,
+    "正股市值": 2200114,
+    "EXPMA5": 2203342,
+    "EXPMA10": 2203342,
+    "EXPMA20": 2203342,
+    "交易状态": 731701,
+    "赎回累计天数": 59651,
+    "下修累计天数": 216188
+  },
+  "months": [
+    {
+      "file": "2015/201501.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 8010,
+      "trade_dates": 20,
+      "bond_codes": 404,
+      "index_observations": 500
+    },
+    {
+      "file": "2015/201502.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 6093,
+      "trade_dates": 15,
+      "bond_codes": 412,
+      "index_observations": 375
+    },
+    {
+      "file": "2015/201503.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9114,
+      "trade_dates": 22,
+      "bond_codes": 418,
+      "index_observations": 550
+    },
+    {
+      "file": "2015/201504.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 8802,
+      "trade_dates": 21,
+      "bond_codes": 422,
+      "index_observations": 525
+    },
+    {
+      "file": "2015/201505.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 8586,
+      "trade_dates": 20,
+      "bond_codes": 442,
+      "index_observations": 500
+    },
+    {
+      "file": "2015/201506.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9319,
+      "trade_dates": 21,
+      "bond_codes": 450,
+      "index_observations": 525
+    },
+    {
+      "file": "2015/201507.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10440,
+      "trade_dates": 23,
+      "bond_codes": 455,
+      "index_observations": 575
+    },
+    {
+      "file": "2015/201508.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9562,
+      "trade_dates": 21,
+      "bond_codes": 458,
+      "index_observations": 525
+    },
+    {
+      "file": "2015/201509.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9178,
+      "trade_dates": 20,
+      "bond_codes": 459,
+      "index_observations": 500
+    },
+    {
+      "file": "2015/201510.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 7820,
+      "trade_dates": 17,
+      "bond_codes": 460,
+      "index_observations": 425
+    },
+    {
+      "file": "2015/201511.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9660,
+      "trade_dates": 21,
+      "bond_codes": 460,
+      "index_observations": 525
+    },
+    {
+      "file": "2015/201512.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10616,
+      "trade_dates": 23,
+      "bond_codes": 466,
+      "index_observations": 575
+    },
+    {
+      "file": "2016/201601.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9320,
+      "trade_dates": 20,
+      "bond_codes": 466,
+      "index_observations": 500
+    },
+    {
+      "file": "2016/201602.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 7504,
+      "trade_dates": 16,
+      "bond_codes": 470,
+      "index_observations": 400
+    },
+    {
+      "file": "2016/201603.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10849,
+      "trade_dates": 23,
+      "bond_codes": 473,
+      "index_observations": 575
+    },
+    {
+      "file": "2016/201604.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9473,
+      "trade_dates": 20,
+      "bond_codes": 475,
+      "index_observations": 500
+    },
+    {
+      "file": "2016/201605.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10021,
+      "trade_dates": 21,
+      "bond_codes": 478,
+      "index_observations": 525
+    },
+    {
+      "file": "2016/201606.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9576,
+      "trade_dates": 20,
+      "bond_codes": 479,
+      "index_observations": 500
+    },
+    {
+      "file": "2016/201607.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10090,
+      "trade_dates": 21,
+      "bond_codes": 482,
+      "index_observations": 525
+    },
+    {
+      "file": "2016/201608.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 11173,
+      "trade_dates": 23,
+      "bond_codes": 489,
+      "index_observations": 575
+    },
+    {
+      "file": "2016/201609.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9871,
+      "trade_dates": 20,
+      "bond_codes": 497,
+      "index_observations": 500
+    },
+    {
+      "file": "2016/201610.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 8049,
+      "trade_dates": 16,
+      "bond_codes": 506,
+      "index_observations": 400
+    },
+    {
+      "file": "2016/201611.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 11202,
+      "trade_dates": 22,
+      "bond_codes": 516,
+      "index_observations": 550
+    },
+    {
+      "file": "2016/201612.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 11501,
+      "trade_dates": 22,
+      "bond_codes": 530,
+      "index_observations": 550
+    },
+    {
+      "file": "2017/201701.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 9824,
+      "trade_dates": 18,
+      "bond_codes": 556,
+      "index_observations": 450
+    },
+    {
+      "file": "2017/201702.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10172,
+      "trade_dates": 18,
+      "bond_codes": 570,
+      "index_observations": 450
+    },
+    {
+      "file": "2017/201703.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13351,
+      "trade_dates": 23,
+      "bond_codes": 589,
+      "index_observations": 575
+    },
+    {
+      "file": "2017/201704.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10762,
+      "trade_dates": 18,
+      "bond_codes": 605,
+      "index_observations": 450
+    },
+    {
+      "file": "2017/201705.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 12284,
+      "trade_dates": 20,
+      "bond_codes": 621,
+      "index_observations": 500
+    },
+    {
+      "file": "2017/201706.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13734,
+      "trade_dates": 22,
+      "bond_codes": 627,
+      "index_observations": 550
+    },
+    {
+      "file": "2017/201707.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13374,
+      "trade_dates": 21,
+      "bond_codes": 646,
+      "index_observations": 525
+    },
+    {
+      "file": "2017/201708.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15068,
+      "trade_dates": 23,
+      "bond_codes": 663,
+      "index_observations": 575
+    },
+    {
+      "file": "2017/201709.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13995,
+      "trade_dates": 21,
+      "bond_codes": 670,
+      "index_observations": 525
+    },
+    {
+      "file": "2017/201710.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 11487,
+      "trade_dates": 17,
+      "bond_codes": 679,
+      "index_observations": 425
+    },
+    {
+      "file": "2017/201711.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15101,
+      "trade_dates": 22,
+      "bond_codes": 694,
+      "index_observations": 550
+    },
+    {
+      "file": "2017/201712.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 14659,
+      "trade_dates": 21,
+      "bond_codes": 701,
+      "index_observations": 526
+    },
+    {
+      "file": "2018/201801.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15463,
+      "trade_dates": 22,
+      "bond_codes": 705,
+      "index_observations": 572
+    },
+    {
+      "file": "2018/201802.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 10653,
+      "trade_dates": 15,
+      "bond_codes": 711,
+      "index_observations": 390
+    },
+    {
+      "file": "2018/201803.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15693,
+      "trade_dates": 22,
+      "bond_codes": 715,
+      "index_observations": 572
+    },
+    {
+      "file": "2018/201804.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 12938,
+      "trade_dates": 18,
+      "bond_codes": 725,
+      "index_observations": 468
+    },
+    {
+      "file": "2018/201805.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15966,
+      "trade_dates": 22,
+      "bond_codes": 727,
+      "index_observations": 572
+    },
+    {
+      "file": "2018/201806.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 14543,
+      "trade_dates": 20,
+      "bond_codes": 728,
+      "index_observations": 520
+    },
+    {
+      "file": "2018/201807.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16046,
+      "trade_dates": 22,
+      "bond_codes": 730,
+      "index_observations": 572
+    },
+    {
+      "file": "2018/201808.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16790,
+      "trade_dates": 23,
+      "bond_codes": 730,
+      "index_observations": 598
+    },
+    {
+      "file": "2018/201809.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13887,
+      "trade_dates": 19,
+      "bond_codes": 733,
+      "index_observations": 494
+    },
+    {
+      "file": "2018/201810.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13194,
+      "trade_dates": 18,
+      "bond_codes": 733,
+      "index_observations": 468
+    },
+    {
+      "file": "2018/201811.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16141,
+      "trade_dates": 22,
+      "bond_codes": 736,
+      "index_observations": 572
+    },
+    {
+      "file": "2018/201812.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 14722,
+      "trade_dates": 20,
+      "bond_codes": 738,
+      "index_observations": 520
+    },
+    {
+      "file": "2019/201901.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16241,
+      "trade_dates": 22,
+      "bond_codes": 739,
+      "index_observations": 572
+    },
+    {
+      "file": "2019/201902.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 11093,
+      "trade_dates": 15,
+      "bond_codes": 741,
+      "index_observations": 390
+    },
+    {
+      "file": "2019/201903.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15588,
+      "trade_dates": 21,
+      "bond_codes": 746,
+      "index_observations": 546
+    },
+    {
+      "file": "2019/201904.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15669,
+      "trade_dates": 21,
+      "bond_codes": 747,
+      "index_observations": 546
+    },
+    {
+      "file": "2019/201905.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15016,
+      "trade_dates": 20,
+      "bond_codes": 754,
+      "index_observations": 520
+    },
+    {
+      "file": "2019/201906.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 14328,
+      "trade_dates": 19,
+      "bond_codes": 755,
+      "index_observations": 494
+    },
+    {
+      "file": "2019/201907.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17417,
+      "trade_dates": 23,
+      "bond_codes": 762,
+      "index_observations": 598
+    },
+    {
+      "file": "2019/201908.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16802,
+      "trade_dates": 22,
+      "bond_codes": 766,
+      "index_observations": 572
+    },
+    {
+      "file": "2019/201909.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15353,
+      "trade_dates": 20,
+      "bond_codes": 771,
+      "index_observations": 520
+    },
+    {
+      "file": "2019/201910.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13906,
+      "trade_dates": 18,
+      "bond_codes": 774,
+      "index_observations": 468
+    },
+    {
+      "file": "2019/201911.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16287,
+      "trade_dates": 21,
+      "bond_codes": 777,
+      "index_observations": 546
+    },
+    {
+      "file": "2019/201912.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17126,
+      "trade_dates": 22,
+      "bond_codes": 781,
+      "index_observations": 572
+    },
+    {
+      "file": "2020/202001.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 12526,
+      "trade_dates": 16,
+      "bond_codes": 786,
+      "index_observations": 416
+    },
+    {
+      "file": "2020/202002.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15832,
+      "trade_dates": 20,
+      "bond_codes": 794,
+      "index_observations": 520
+    },
+    {
+      "file": "2020/202003.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17485,
+      "trade_dates": 22,
+      "bond_codes": 795,
+      "index_observations": 572
+    },
+    {
+      "file": "2020/202004.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16772,
+      "trade_dates": 21,
+      "bond_codes": 803,
+      "index_observations": 546
+    },
+    {
+      "file": "2020/202005.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 14499,
+      "trade_dates": 18,
+      "bond_codes": 807,
+      "index_observations": 468
+    },
+    {
+      "file": "2020/202006.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16219,
+      "trade_dates": 20,
+      "bond_codes": 815,
+      "index_observations": 520
+    },
+    {
+      "file": "2020/202007.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18861,
+      "trade_dates": 23,
+      "bond_codes": 825,
+      "index_observations": 598
+    },
+    {
+      "file": "2020/202008.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17428,
+      "trade_dates": 21,
+      "bond_codes": 838,
+      "index_observations": 546
+    },
+    {
+      "file": "2020/202009.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18633,
+      "trade_dates": 22,
+      "bond_codes": 855,
+      "index_observations": 572
+    },
+    {
+      "file": "2020/202010.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13695,
+      "trade_dates": 16,
+      "bond_codes": 858,
+      "index_observations": 416
+    },
+    {
+      "file": "2020/202011.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18069,
+      "trade_dates": 21,
+      "bond_codes": 864,
+      "index_observations": 546
+    },
+    {
+      "file": "2020/202012.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19960,
+      "trade_dates": 23,
+      "bond_codes": 873,
+      "index_observations": 598
+    },
+    {
+      "file": "2021/202101.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17508,
+      "trade_dates": 20,
+      "bond_codes": 882,
+      "index_observations": 520
+    },
+    {
+      "file": "2021/202102.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13273,
+      "trade_dates": 15,
+      "bond_codes": 888,
+      "index_observations": 390
+    },
+    {
+      "file": "2021/202103.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20523,
+      "trade_dates": 23,
+      "bond_codes": 897,
+      "index_observations": 598
+    },
+    {
+      "file": "2021/202104.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18955,
+      "trade_dates": 21,
+      "bond_codes": 909,
+      "index_observations": 546
+    },
+    {
+      "file": "2021/202105.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16426,
+      "trade_dates": 18,
+      "bond_codes": 917,
+      "index_observations": 468
+    },
+    {
+      "file": "2021/202106.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19375,
+      "trade_dates": 21,
+      "bond_codes": 927,
+      "index_observations": 546
+    },
+    {
+      "file": "2021/202107.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20525,
+      "trade_dates": 22,
+      "bond_codes": 936,
+      "index_observations": 572
+    },
+    {
+      "file": "2021/202108.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20725,
+      "trade_dates": 22,
+      "bond_codes": 945,
+      "index_observations": 572
+    },
+    {
+      "file": "2021/202109.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18980,
+      "trade_dates": 20,
+      "bond_codes": 951,
+      "index_observations": 520
+    },
+    {
+      "file": "2021/202110.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15260,
+      "trade_dates": 16,
+      "bond_codes": 956,
+      "index_observations": 416
+    },
+    {
+      "file": "2021/202111.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21106,
+      "trade_dates": 22,
+      "bond_codes": 963,
+      "index_observations": 572
+    },
+    {
+      "file": "2021/202112.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22181,
+      "trade_dates": 23,
+      "bond_codes": 968,
+      "index_observations": 598
+    },
+    {
+      "file": "2022/202201.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18393,
+      "trade_dates": 19,
+      "bond_codes": 969,
+      "index_observations": 494
+    },
+    {
+      "file": "2022/202202.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15509,
+      "trade_dates": 16,
+      "bond_codes": 970,
+      "index_observations": 416
+    },
+    {
+      "file": "2022/202203.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22350,
+      "trade_dates": 23,
+      "bond_codes": 974,
+      "index_observations": 598
+    },
+    {
+      "file": "2022/202204.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18523,
+      "trade_dates": 19,
+      "bond_codes": 975,
+      "index_observations": 494
+    },
+    {
+      "file": "2022/202205.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18539,
+      "trade_dates": 19,
+      "bond_codes": 976,
+      "index_observations": 506
+    },
+    {
+      "file": "2022/202206.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20513,
+      "trade_dates": 21,
+      "bond_codes": 977,
+      "index_observations": 567
+    },
+    {
+      "file": "2022/202207.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20517,
+      "trade_dates": 21,
+      "bond_codes": 977,
+      "index_observations": 567
+    },
+    {
+      "file": "2022/202208.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22502,
+      "trade_dates": 23,
+      "bond_codes": 980,
+      "index_observations": 621
+    },
+    {
+      "file": "2022/202209.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20600,
+      "trade_dates": 21,
+      "bond_codes": 982,
+      "index_observations": 567
+    },
+    {
+      "file": "2022/202210.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15716,
+      "trade_dates": 16,
+      "bond_codes": 983,
+      "index_observations": 432
+    },
+    {
+      "file": "2022/202211.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21641,
+      "trade_dates": 22,
+      "bond_codes": 985,
+      "index_observations": 594
+    },
+    {
+      "file": "2022/202212.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21691,
+      "trade_dates": 22,
+      "bond_codes": 988,
+      "index_observations": 594
+    },
+    {
+      "file": "2023/202301.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 15808,
+      "trade_dates": 16,
+      "bond_codes": 988,
+      "index_observations": 432
+    },
+    {
+      "file": "2023/202302.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19760,
+      "trade_dates": 20,
+      "bond_codes": 988,
+      "index_observations": 540
+    },
+    {
+      "file": "2023/202303.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22741,
+      "trade_dates": 23,
+      "bond_codes": 989,
+      "index_observations": 621
+    },
+    {
+      "file": "2023/202304.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18814,
+      "trade_dates": 19,
+      "bond_codes": 991,
+      "index_observations": 513
+    },
+    {
+      "file": "2023/202305.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19820,
+      "trade_dates": 20,
+      "bond_codes": 991,
+      "index_observations": 540
+    },
+    {
+      "file": "2023/202306.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19821,
+      "trade_dates": 20,
+      "bond_codes": 992,
+      "index_observations": 540
+    },
+    {
+      "file": "2023/202307.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20839,
+      "trade_dates": 21,
+      "bond_codes": 993,
+      "index_observations": 567
+    },
+    {
+      "file": "2023/202308.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22839,
+      "trade_dates": 23,
+      "bond_codes": 993,
+      "index_observations": 621
+    },
+    {
+      "file": "2023/202309.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19880,
+      "trade_dates": 20,
+      "bond_codes": 994,
+      "index_observations": 540
+    },
+    {
+      "file": "2023/202310.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16898,
+      "trade_dates": 17,
+      "bond_codes": 994,
+      "index_observations": 459
+    },
+    {
+      "file": "2023/202311.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21868,
+      "trade_dates": 22,
+      "bond_codes": 994,
+      "index_observations": 594
+    },
+    {
+      "file": "2023/202312.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20874,
+      "trade_dates": 21,
+      "bond_codes": 994,
+      "index_observations": 567
+    },
+    {
+      "file": "2024/202401.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21868,
+      "trade_dates": 22,
+      "bond_codes": 994,
+      "index_observations": 594
+    },
+    {
+      "file": "2024/202402.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 14910,
+      "trade_dates": 15,
+      "bond_codes": 994,
+      "index_observations": 405
+    },
+    {
+      "file": "2024/202403.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20874,
+      "trade_dates": 21,
+      "bond_codes": 994,
+      "index_observations": 567
+    },
+    {
+      "file": "2024/202404.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19880,
+      "trade_dates": 20,
+      "bond_codes": 994,
+      "index_observations": 540
+    },
+    {
+      "file": "2024/202405.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19880,
+      "trade_dates": 20,
+      "bond_codes": 994,
+      "index_observations": 540
+    },
+    {
+      "file": "2024/202406.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18893,
+      "trade_dates": 19,
+      "bond_codes": 995,
+      "index_observations": 513
+    },
+    {
+      "file": "2024/202407.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22885,
+      "trade_dates": 23,
+      "bond_codes": 995,
+      "index_observations": 621
+    },
+    {
+      "file": "2024/202408.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21901,
+      "trade_dates": 22,
+      "bond_codes": 996,
+      "index_observations": 594
+    },
+    {
+      "file": "2024/202409.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18924,
+      "trade_dates": 19,
+      "bond_codes": 996,
+      "index_observations": 513
+    },
+    {
+      "file": "2024/202410.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17934,
+      "trade_dates": 18,
+      "bond_codes": 997,
+      "index_observations": 486
+    },
+    {
+      "file": "2024/202411.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20937,
+      "trade_dates": 21,
+      "bond_codes": 997,
+      "index_observations": 567
+    },
+    {
+      "file": "2024/202412.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21948,
+      "trade_dates": 22,
+      "bond_codes": 998,
+      "index_observations": 594
+    },
+    {
+      "file": "2025/202501.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17964,
+      "trade_dates": 18,
+      "bond_codes": 998,
+      "index_observations": 486
+    },
+    {
+      "file": "2025/202502.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17964,
+      "trade_dates": 18,
+      "bond_codes": 998,
+      "index_observations": 486
+    },
+    {
+      "file": "2025/202503.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20958,
+      "trade_dates": 21,
+      "bond_codes": 998,
+      "index_observations": 567
+    },
+    {
+      "file": "2025/202504.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20958,
+      "trade_dates": 21,
+      "bond_codes": 998,
+      "index_observations": 567
+    },
+    {
+      "file": "2025/202505.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 18962,
+      "trade_dates": 19,
+      "bond_codes": 998,
+      "index_observations": 513
+    },
+    {
+      "file": "2025/202506.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19960,
+      "trade_dates": 20,
+      "bond_codes": 998,
+      "index_observations": 540
+    },
+    {
+      "file": "2025/202507.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22954,
+      "trade_dates": 23,
+      "bond_codes": 998,
+      "index_observations": 621
+    },
+    {
+      "file": "2025/202508.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20958,
+      "trade_dates": 21,
+      "bond_codes": 998,
+      "index_observations": 567
+    },
+    {
+      "file": "2025/202509.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21956,
+      "trade_dates": 22,
+      "bond_codes": 998,
+      "index_observations": 594
+    },
+    {
+      "file": "2025/202510.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 16966,
+      "trade_dates": 17,
+      "bond_codes": 998,
+      "index_observations": 459
+    },
+    {
+      "file": "2025/202511.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19960,
+      "trade_dates": 20,
+      "bond_codes": 998,
+      "index_observations": 540
+    },
+    {
+      "file": "2025/202512.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22954,
+      "trade_dates": 23,
+      "bond_codes": 998,
+      "index_observations": 621
+    },
+    {
+      "file": "2026/202601.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 19960,
+      "trade_dates": 20,
+      "bond_codes": 998,
+      "index_observations": 540
+    },
+    {
+      "file": "2026/202602.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 13972,
+      "trade_dates": 14,
+      "bond_codes": 998,
+      "index_observations": 378
+    },
+    {
+      "file": "2026/202603.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 21956,
+      "trade_dates": 22,
+      "bond_codes": 998,
+      "index_observations": 594
+    },
+    {
+      "file": "2026/202604.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20958,
+      "trade_dates": 21,
+      "bond_codes": 998,
+      "index_observations": 566
+    },
+    {
+      "file": "2026/202605.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 17964,
+      "trade_dates": 18,
+      "bond_codes": 998,
+      "index_observations": 484
+    },
+    {
+      "file": "2026/202606.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 20958,
+      "trade_dates": 21,
+      "bond_codes": 998,
+      "index_observations": 567
+    },
+    {
+      "file": "2026/202607.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 22954,
+      "trade_dates": 23,
+      "bond_codes": 998,
+      "index_observations": 621
+    },
+    {
+      "file": "2026/202608.parquet",
+      "legacy_rows": 29967,
+      "standard_rows": 5988,
+      "trade_dates": 6,
+      "bond_codes": 998,
+      "index_observations": 141
+    }
+  ],
+  "removed_metrics": [
+    "不强赎承诺期倒计时",
+    "不下修承诺期倒计时",
+    "转债20天波动率",
+    "近两年正股波动率"
+  ]
+}

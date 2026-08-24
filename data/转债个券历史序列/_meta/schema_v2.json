@@ -1,0 +1,85 @@
+{
+  "schema_version": "2.15.0",
+  "monthly": {
+    "primary_key": [
+      "转债代码",
+      "交易日期"
+    ],
+    "fields": {
+      "转债代码": "string",
+      "交易日期": "date32[day]",
+      "余额": "double",
+      "收盘价": "double",
+      "平价": "double",
+      "转股价": "double",
+      "转股溢价率": "double",
+      "纯债价值": "double",
+      "纯债溢价率": "double",
+      "平价底价溢价率": "double",
+      "YTM": "double",
+      "换手率": "double",
+      "成交量": "double",
+      "成交额": "double",
+      "涨跌幅": "double",
+      "剩余期限": "double",
+      "隐含波动率": "double",
+      "主体评级": "string",
+      "债项评级": "string",
+      "正股收盘价": "double",
+      "正股交易状态": "string",
+      "正股近1日均价": "double",
+      "正股近20日均价": "double",
+      "正股20日波动率": "double",
+      "累计转股比例": "double",
+      "转股稀释率": "double",
+      "正股市值": "double",
+      "每股净资产": "double",
+      "EXPMA5": "double",
+      "EXPMA10": "double",
+      "EXPMA20": "double",
+      "交易状态": "string",
+      "赎回累计天数": "double",
+      "下修累计天数": "double"
+    }
+  },
+  "master": {
+    "primary_key": [
+      "转债代码"
+    ],
+    "date_fields": [
+      "上市日期",
+      "最后交易日",
+      "最后转股日",
+      "摘牌日期",
+      "到期日期",
+      "发行日期",
+      "赎回公告日",
+      "转股期起始日",
+      "回售起始日期"
+    ],
+    "float_fields": [
+      "发行规模",
+      "到期赎回价",
+      "股票发行面值",
+      "赎回触发比例",
+      "下修触发比例"
+    ],
+    "integer_fields": [
+      "赎回触发计算时间区间",
+      "赎回触发计算最大时间区间",
+      "重设触发计算时间区间",
+      "重设触发计算最大时间区间"
+    ]
+  },
+  "index": {
+    "primary_key": [
+      "指数名称",
+      "交易日期"
+    ],
+    "fields": {
+      "指数名称": "string",
+      "交易日期": "date32[day]",
+      "指数值": "double"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "2.1.0",
+  "removed_at": "2026-08-11T12:00:48+08:00",
+  "removed_columns": [
+    "不强赎承诺期倒计时",
+    "不下修承诺期倒计时"
+  ],
+  "removed_non_null_values": {
+    "不强赎承诺期倒计时": 57633,
+    "不下修承诺期倒计时": 164431
+  },
+  "monthly_files_rewritten": 140
+}

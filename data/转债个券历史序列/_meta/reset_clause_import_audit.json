@@ -1,0 +1,21 @@
+{
+  "field": "下修条款全文",
+  "formula": "=@cb_clause_reset_item(转债代码)",
+  "schema_version": "2.10.0",
+  "master_rows": 998,
+  "master_columns": 20,
+  "preexisting_nonnull": 0,
+  "fetched_nonnull": 998,
+  "final_nonnull": 998,
+  "final_blank": 0,
+  "text_length_min": 93,
+  "text_length_median": 312.0,
+  "text_length_max": 577,
+  "duplicate_codes": 0,
+  "update_mode": "only_blank",
+  "existing_values_preserved": true,
+  "monthly_files_rewritten_for_schema_metadata": 140,
+  "monthly_rows_preserved": 2529000,
+  "old_parquet_fingerprint": "e59121a38b8d9adf0fcf144a9ea32a92",
+  "new_parquet_fingerprint": "e2c3718c2e3952184391233c500b4e7d"
+}

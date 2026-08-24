@@ -117,7 +117,7 @@ TABLE_COLUMN_WIDTHS = [0.06, 0.06, 0.06, 0.06, 0.06, 0.1, 0.1, 0.1, 0.06, 0.06, 
 def make_paths():
     mmdd_today = _time.strftime("%m%d", _time.localtime())
     yyyymmdd_today = _time.strftime("%Y%m%d", _time.localtime())
-    folder = Path(f"{mmdd_today}数据更新") / "赎回数据更新"
+    folder = SCRIPT_DIR / "runs" / "daily" / f"{mmdd_today}数据更新" / "赎回数据更新"
     folder.mkdir(parents=True, exist_ok=True)
     return {
         "mmdd": mmdd_today,

@@ -1,0 +1,13 @@
+{
+  "schema_version": "2.2.0",
+  "removed_at": "2026-08-11T12:40:08+08:00",
+  "removed_columns": [
+    "转债20天波动率",
+    "近两年正股波动率"
+  ],
+  "removed_non_null_values": {
+    "转债20天波动率": 757153,
+    "近两年正股波动率": 2164651
+  },
+  "monthly_files_rewritten": 140
+}

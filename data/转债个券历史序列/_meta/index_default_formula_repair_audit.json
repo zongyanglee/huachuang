@@ -1,0 +1,14 @@
+{
+  "repaired_at": "2026-08-15T01:38:20",
+  "schema_version": "2.11.0",
+  "target_series": 31,
+  "cache_start": "2017-01-03",
+  "cache_end": "2026-08-12",
+  "cache_rows": 61009,
+  "changed_common_values": 0,
+  "dropped_values_without_model_cache": 56,
+  "added_values_from_cache": 0,
+  "remaining_exact_ten_year_matches": {},
+  "backup": "D:\\JupyterFiles\\huachuang\\.cache_multifactor_fit\\指数_修复十年国债误填前备份_20260815.parquet",
+  "index_rows_after": 176279
+}

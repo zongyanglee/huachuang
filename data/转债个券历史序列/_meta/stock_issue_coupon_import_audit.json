@@ -1,0 +1,20 @@
+{
+  "field": "股票发行面值",
+  "formula": "=@thsiFinD(\"ths_stock_issue_coupon_value_stock\",thsiFinD(\"ths_stock_code_cbond\",转债代码))",
+  "schema_version": "2.8.0",
+  "master_rows": 998,
+  "master_columns": 19,
+  "preexisting_nonnull": 0,
+  "fetched_nonnull": 998,
+  "final_nonnull": 998,
+  "final_blank": 0,
+  "invalid_nonblank_results": 0,
+  "zero_values_removed": 0,
+  "duplicate_codes": 0,
+  "update_mode": "only_blank",
+  "existing_values_preserved": true,
+  "monthly_files_rewritten_for_schema_metadata": 140,
+  "monthly_rows_preserved": 2245568,
+  "old_parquet_fingerprint": "f259c5d2cc56639cc3440297992e59e8",
+  "new_parquet_fingerprint": "117d9cb8cffad68046ee352ce0c88544"
+}

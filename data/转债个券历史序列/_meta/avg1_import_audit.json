@@ -1,0 +1,21 @@
+{
+  "source_file": "D:\\JupyterFiles\\huachuang\\近1日均价.xlsx",
+  "source_sheet": "Sheet1",
+  "metric": "正股近1日均价",
+  "metric_original_name": "近1日均价",
+  "schema_version": "2.5.0",
+  "parquet_cutoff": "2026-08-13",
+  "source_first_date": "2015-01-05",
+  "source_last_date_in_workbook": "2026-08-14",
+  "source_bond_codes": 998,
+  "written_nonnull_values": 2209341,
+  "zero_values": 0,
+  "negative_values": 0,
+  "duplicate_keys": 0,
+  "lifecycle_exempt_stock_metric": true,
+  "monthly_files": 140,
+  "monthly_rows_before": 2245568,
+  "monthly_rows_after": 2245568,
+  "old_parquet_fingerprint": "2236745bd9e52d2d07acd069a756633f",
+  "new_parquet_fingerprint": "7c5fb9c5798475403b941581f2de7649"
+}

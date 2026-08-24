@@ -38,7 +38,9 @@ from tqdm import tqdm
 # 内存 sheet 字典：中文名 -> 宽表 DataFrame
 SheetDict = dict[str, pd.DataFrame]
 
-_SCRIPT_DIR = str(Path(__file__).resolve().parents[2])
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPT_DIR = str(_WORKSPACE_ROOT)
+RUNS_DAILY_ROOT = _WORKSPACE_ROOT / "runs" / "daily"
 _KAITI_CANDIDATES = (
     "assets/fonts/KaiTi_GB2312.ttf",
     "KaiTi_GB2312.TTF",
@@ -1604,10 +1606,11 @@ def resolve_date_range(
 def setup_output_paths() -> tuple[str, str, str]:
     """创建 MMDD数据更新 目录，返回 folder_name、xlsx 路径、周报 txt 路径。"""
     mmdd = _time.strftime("%m%d", _time.localtime())
-    folder_name = f"{mmdd}数据更新"
-    os.makedirs(folder_name, exist_ok=True)
-    filedir = os.path.join(folder_name, f"{mmdd}数据更新.xlsx")
-    outputname = os.path.join(folder_name, f"{mmdd}转债周报.txt")
+    folder_path = RUNS_DAILY_ROOT / f"{mmdd}数据更新"
+    folder_path.mkdir(parents=True, exist_ok=True)
+    folder_name = str(folder_path)
+    filedir = str(folder_path / f"{mmdd}数据更新.xlsx")
+    outputname = str(folder_path / f"{mmdd}转债周报.txt")
     print(f"更新数据保存路径为 {folder_name}")
     print("——————————————————————————————————————————————————————————————————————————")
     return folder_name, filedir, outputname
@@ -1633,19 +1636,35 @@ def _find_winrar_executable() -> str:
 
 
 def archive_output_folder(folder_name: str) -> str:
-    """将当日输出目录打包为与目录同名的 rar（如 ``0624数据更新.rar``），与目录同级落盘。"""
+    """将当日输出目录的内容打包为同级 RAR，不保留工作区父目录层级。"""
     abs_folder = os.path.abspath(folder_name)
     parent = os.path.dirname(abs_folder) or "."
     base = os.path.basename(abs_folder)
     archive_path = os.path.join(parent, f"{base}.rar")
-    if os.path.isfile(archive_path):
-        os.remove(archive_path)
+    temp_archive_path = os.path.join(parent, f".{base}.tmp.rar")
+    if os.path.isfile(temp_archive_path):
+        os.remove(temp_archive_path)
     rar_exe = _find_winrar_executable()
-    subprocess.run(
-        [rar_exe, "a", "-r", "-y", "-idq", archive_path, abs_folder],
-        check=True,
-        cwd=parent,
-    )
+    try:
+        subprocess.run(
+            [
+                rar_exe,
+                "a",
+                "-r",
+                "-dh",
+                "-y",
+                "-idq",
+                "-x~$*",
+                temp_archive_path,
+                "*",
+            ],
+            check=True,
+            cwd=abs_folder,
+        )
+        os.replace(temp_archive_path, archive_path)
+    finally:
+        if os.path.isfile(temp_archive_path):
+            os.remove(temp_archive_path)
     print(f"已打包输出目录: {archive_path}")
     return archive_path
 
@@ -2434,7 +2453,7 @@ def main() -> DailyUpdateContext:
     start_time = _time.time()
     ctx = run_daily_data_update(
         days_today=0,
-        manual_days_backwards=-5,
+        manual_days_backwards=-1,
     )
     print(f"总耗时 {_time.time() - start_time:.1f}s")
     return ctx

@@ -1,0 +1,23 @@
+{
+  "source_file": "D:\\JupyterFiles\\huachuang\\每股净资产.xlsx",
+  "source_sheet": "Sheet1",
+  "formula": "=thsiFinD(\"ths_net_asset_bps_latest_announ_stock\",转债代码,日期)",
+  "metric": "每股净资产",
+  "schema_version": "2.9.0",
+  "parquet_cutoff": "2026-08-13",
+  "source_first_date": "2015-01-05",
+  "source_last_date_in_workbook": "2026-08-14",
+  "source_bond_codes": 998,
+  "written_nonnull_values": 2526481,
+  "zero_values": 0,
+  "negative_values_preserved": 3938,
+  "duplicate_keys": 0,
+  "full_history_stock_metric": true,
+  "lifecycle_exempt_stock_metric": true,
+  "monthly_files": 140,
+  "monthly_rows_before": 2245568,
+  "monthly_rows_added": 283432,
+  "monthly_rows_after": 2529000,
+  "old_parquet_fingerprint": "117d9cb8cffad68046ee352ce0c88544",
+  "new_parquet_fingerprint": "e59121a38b8d9adf0fcf144a9ea32a92"
+}

@@ -40,7 +40,9 @@ GRAY = "#A6A6A6"
 PINK = "#E6B9B8"
 SKY = "#B7DEE8"
 ORANGE = "#F79646"
-IFIND_CREDENTIAL_FILE = Path(__file__).resolve().parents[2] / "private/ifind账号.txt"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+RUNS_DAILY_ROOT = WORKSPACE_ROOT / "runs" / "daily"
+IFIND_CREDENTIAL_FILE = WORKSPACE_ROOT / "private/ifind账号.txt"
 
 
 def load_ifind_credentials() -> tuple[str, str]:
@@ -72,11 +74,10 @@ def ths_login_demo():
     print("登录成功")
 
 
-def make_output_dir(mmdd_today):
-    root = Path(f"{mmdd_today}数据更新")
-    root.mkdir(exist_ok=True)
+def make_output_dir(mmdd_today: str) -> Path:
+    root = RUNS_DAILY_ROOT / f"{mmdd_today}数据更新"
     folder = root / "日内估值数据更新"
-    folder.mkdir(exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
     return folder
 
 
@@ -648,7 +649,7 @@ def print_runtime(start_time):
     else:
         print(f"程序总运行时长：{int(total_time)} 秒")
     print(time.strftime("%H:%M:%S", time.localtime(end_time)), "基础分时估值运行完成")
-    print("\U0001F600", "\U0001F600", "\U0001F600")
+    print("基础分时估值文件已全部生成")
 
 
 def main():
