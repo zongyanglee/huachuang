@@ -1,0 +1,59 @@
+# Secrets and private local configuration
+private/
+.env
+.env.*
+!.env.example
+*账号.txt
+*授权码*
+*邮箱列表*
+
+# Business data and generated workspaces
+data/
+runs/
+outputs/
+archive/
+tmp/
+backups/
+*_数据更新/
+*数据更新/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Node dependencies
+node_modules/
+
+# Application and analysis caches
+.cache*/
+.codex_tmp*/
+.codex_doc_review/
+_tmp*/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+~$*
+
+# Business documents and datasets are local by default
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.parquet
+*.docx
+*.pptx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.ttf
+
+# Existing legacy exclusions
+.cache_recovered_data/
+2015补档20260417_updated.xlsx
+2015补档*.xlsx

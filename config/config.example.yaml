@@ -1,0 +1,15 @@
+# Copy required values to a local file under private/ or to environment variables.
+# Never place real credentials in this example file.
+
+paths:
+  parquet_root: data/转债个券历史序列
+  output_root: outputs
+  run_root: runs
+
+ifind:
+  username: ""
+  password: ""
+
+email:
+  sender: ""
+  authorization_code: ""

@@ -1,0 +1,19 @@
+# Core data and spreadsheet stack
+numpy
+pandas
+pyarrow
+openpyxl
+xlwings
+
+# Analysis and visualization
+matplotlib
+scipy
+Pillow
+tqdm
+
+# Documents and Windows integration
+lxml
+pypdf
+pywin32
+
+# iFinDPy is installed with the iFinD desktop client and is not listed on PyPI.

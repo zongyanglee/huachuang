@@ -1,0 +1,7 @@
+interface:
+  display_name: "金融研报审核"
+  short_description: "全面校验报告文字、逻辑、数据、图表与专业口径"
+  default_prompt: "Use $report-proofreader to audit this report and return an evidence-backed issue list."
+
+policy:
+  allow_implicit_invocation: true

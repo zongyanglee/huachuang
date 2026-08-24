@@ -1,0 +1,4 @@
+interface:
+  display_name: "DOCX 转 PPTX"
+  short_description: "将中文 Word 研报按章节与图表映射到指定 PPT 模板"
+  default_prompt: "Use $docx-to-pptx to convert my Chinese Word report into a PowerPoint with the supplied PPTX template, then run QA."
