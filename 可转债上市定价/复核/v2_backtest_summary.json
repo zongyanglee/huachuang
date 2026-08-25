@@ -1,0 +1,52 @@
+{
+  "model_version": "cb_listing_v2.0_adaptive_outer_walk_forward",
+  "rule_start": "2022-08-01",
+  "history_count_since_rule_start": 348,
+  "first_raw_model_prediction_date": "2023-07-18",
+  "first_outer_adaptive_prediction_date": "2023-11-15",
+  "last_prediction_date": "2026-08-24",
+  "outer_prediction_count": 152,
+  "warmup_excluded_count": 196,
+  "adaptive": {
+    "n": 152,
+    "mae": 5.4796354249653065,
+    "rmse": 9.658094232317268,
+    "median_ae": 2.8286825561523443,
+    "bias": -1.8535095463802984,
+    "within_3": 0.5197368421052632,
+    "within_5": 0.6907894736842105,
+    "within_10": 0.8289473684210527,
+    "overprediction_share": 0.4868421052631579,
+    "underprediction_share": 0.5131578947368421
+  },
+  "fixed_weight_baseline_same_sample": {
+    "n": 152,
+    "mae": 5.820046915154711,
+    "rmse": 9.5397924527315,
+    "median_ae": 3.2367845764160066,
+    "bias": -1.8352170691239251,
+    "within_3": 0.4934210526315789,
+    "within_5": 0.5921052631578947,
+    "within_10": 0.8157894736842105,
+    "overprediction_share": 0.4473684210526316,
+    "underprediction_share": 0.5526315789473685
+  },
+  "mae_improvement_vs_baseline": 0.05848947528292481,
+  "signed_error_quantiles": {
+    "p05": -16.421707382202154,
+    "p10": -11.263003283691416,
+    "p25": -3.506419097900398,
+    "p50": -0.046240234375005684,
+    "p75": 1.9003239440917916,
+    "p90": 6.159664062500003,
+    "p95": 10.766291012573245
+  },
+  "absolute_error_quantiles": {
+    "p50": 2.8286825561523443,
+    "p80": 9.066137695312513,
+    "p90": 14.38638311767579,
+    "p95": 16.8919408416748,
+    "p100": 47.1155975341797
+  },
+  "selection_rule": "for each bond, choose hyperparameters only from prior three-year walk-forward errors; same-day listings are excluded from calibration and selection"
+}

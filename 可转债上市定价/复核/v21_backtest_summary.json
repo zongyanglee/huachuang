@@ -1,0 +1,58 @@
+{
+  "model_version": "cb_listing_v2.1_scarcity_outer_walk_forward",
+  "scarcity_factor": "发行规模亿元 × (1 - 原股东配售率)",
+  "scarcity_formula": "min(单券修正上限, 筹码斜率 × max(0, ln(筹码阈值/潜在首日流通筹码)))",
+  "parameter_grids": {
+    "threshold_billion_yuan": [
+      0.5,
+      0.75,
+      1.0,
+      1.25
+    ],
+    "slope": [
+      6.0,
+      12.0,
+      18.0,
+      24.0
+    ],
+    "correction_cap_yuan": [
+      6.0,
+      9.0,
+      12.0,
+      15.0
+    ]
+  },
+  "selection_constraints": "each bond uses only prior-three-year errors; RMSE, overprediction-over-10 count and non-cap MAE cannot be worse than v2.0 in the selection window",
+  "first_prediction_date": "2023-11-15",
+  "last_prediction_date": "2026-08-24",
+  "n": 152,
+  "v2.0": {
+    "n": 152,
+    "mae": 5.4796354249653065,
+    "rmse": 9.658094232317268,
+    "bias": -1.8535095463802984,
+    "within5": 0.6907894736842105,
+    "within10": 0.8289473684210527,
+    "under10": 17,
+    "over10": 9,
+    "noncap_n": 91,
+    "noncap_mae": 5.176791860727163
+  },
+  "v2.1": {
+    "n": 152,
+    "mae": 4.785737920708707,
+    "rmse": 8.392069641763864,
+    "bias": -1.1155519338489779,
+    "within5": 0.7105263157894737,
+    "within10": 0.8486842105263158,
+    "under10": 13,
+    "over10": 10,
+    "noncap_n": 91,
+    "noncap_mae": 5.174939861658175
+  },
+  "mae_improvement": 0.12663205677793665,
+  "rmse_improvement": 0.13108430712107955,
+  "corrected_bond_count": 21,
+  "underestimation_over_10_count": 13,
+  "absolute_error_over_10_count": 23
+}
