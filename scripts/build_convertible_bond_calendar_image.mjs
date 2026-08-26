@@ -115,7 +115,7 @@ async function build(payload, xlsxPath, pngPath) {
     "发行规模\n（亿元）",
     "债项评级",
     "评级公司",
-    "V2.1上市预测价\n（元）",
+    "上市预测价\n（元）",
     ...payload.calendar_dates.map(dateLabel),
   ];
   sheet.getRange(`A${headerRow}:${lastCol}${headerRow}`).values = [headers];
