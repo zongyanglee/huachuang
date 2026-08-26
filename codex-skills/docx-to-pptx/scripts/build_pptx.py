@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -491,6 +492,16 @@ def parse_and_plan(items: list[dict], img_map: dict, cover_title: str) -> list[d
             # 1–2 段说明，避免图表被推到页外或缩成不可读的细条。
             chart_body = list(body_parts)
             leading_body = []
+            has_table_chart = any(
+                img_map.get(ct)
+                and Path(img_map[ct]).name.lower().endswith("_table.png")
+                for ct in chart_titles
+            )
+            # 原生 Word 表格通常行列较多，必须独占整页。把相关说明全部
+            # 前置为纯文字页，避免表格在图表区内被压缩成不可读的细条。
+            if has_table_chart:
+                leading_body.extend(chart_body)
+                chart_body = []
             while len(chart_body) > 1 and (
                 len(chart_body) > 2
                 or sum(len(t) for t, _ in chart_body) > 450
@@ -504,9 +515,29 @@ def parse_and_plan(items: list[dict], img_map: dict, cover_title: str) -> list[d
                     "charts": [],
                 })
             
-            # 图表分页
-            for ci_offset in range(0, len(chart_titles), 2):
-                batch = chart_titles[ci_offset:ci_offset+2]
+            # 图表分页：普通图表每页最多 2 张；大型表格始终单独成页。
+            chart_batches = []
+            pending_batch = []
+            for chart_title in chart_titles:
+                image_path = img_map.get(chart_title)
+                is_table = (
+                    image_path
+                    and Path(image_path).name.lower().endswith("_table.png")
+                )
+                if is_table:
+                    if pending_batch:
+                        chart_batches.append(pending_batch)
+                        pending_batch = []
+                    chart_batches.append([chart_title])
+                else:
+                    pending_batch.append(chart_title)
+                    if len(pending_batch) == 2:
+                        chart_batches.append(pending_batch)
+                        pending_batch = []
+            if pending_batch:
+                chart_batches.append(pending_batch)
+
+            for batch_index, batch in enumerate(chart_batches):
                 # Word 中偶尔会把普通规则小标题误标成“图表标题”。只有在
                 # chart_image_map 中确实有对应图片时，才创建图表模块，避免
                 # 生成只有蓝色标题条、没有图表内容的空框。
@@ -516,8 +547,8 @@ def parse_and_plan(items: list[dict], img_map: dict, cover_title: str) -> list[d
                 ]
                 pages.append({
                     "type": "content", "title": page_title,
-                    "body": [t for t, r in chart_body],
-                    "body_runs": [r for t, r in chart_body],
+                    "body": [t for t, r in chart_body] if batch_index == 0 else [],
+                    "body_runs": [r for t, r in chart_body] if batch_index == 0 else [],
                     "charts": chart_entries,
                 })
     
@@ -732,7 +763,16 @@ def main() -> int:
     # Use the OS temporary directory. Some managed workspaces permit final
     # output writes but reject OOXML extraction files such as
     # ``[Content_Types].xml`` inside the project output directory.
-    unpacked_dir = Path(tempfile.mkdtemp(prefix="docx_to_pptx_"))
+    unpacked_override = os.environ.get("DOCX_TO_PPTX_UNPACKED_DIR")
+    if unpacked_override:
+        unpacked_dir = Path(unpacked_override)
+        unpacked_dir.mkdir(parents=True, exist_ok=True)
+        if any(unpacked_dir.iterdir()):
+            raise RuntimeError(
+                f"DOCX_TO_PPTX_UNPACKED_DIR must be empty: {unpacked_dir}"
+            )
+    else:
+        unpacked_dir = Path(tempfile.mkdtemp(prefix="docx_to_pptx_"))
 
     # ── Phase 1: 提取封面标题 + 解析内容 ──
     cover_title = ""

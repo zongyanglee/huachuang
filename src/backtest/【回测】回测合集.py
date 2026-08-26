@@ -31,7 +31,8 @@ from tqdm import tqdm
 
 import sys
 
-_COMMON_MODULE_DIR = Path(__file__).resolve().parents[1] / "common"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+_COMMON_MODULE_DIR = WORKSPACE_ROOT / "src" / "common"
 if str(_COMMON_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_COMMON_MODULE_DIR))
 
@@ -67,7 +68,7 @@ DECOMP_GROUP_COLUMNS = ["分类", "转债收益率", "债券贡献", "正股贡�
 @dataclass
 class BacktestConfig:
     # 唯一底稿数据源：标准 parquet 目录。
-    parquet_root: str = "data/转债个券历史序列"
+    parquet_root: str = str(WORKSPACE_ROOT / "data" / "转债个券历史序列")
     # True 时跳过内存/磁盘缓存，强制重新读取源数据。
     force_refresh: bool = False
 
@@ -122,7 +123,9 @@ class BacktestConfig:
     write_strategy_nav_to_parquet: bool = True
 
     # 输出路径和文件名；output_dir_template 支持 {end_date} 占位符，取回测截止最新交易日。
-    output_dir_template: str = "策略回测{end_date}"
+    output_dir_template: str = str(
+        WORKSPACE_ROOT / "runs" / "research" / "策略回测{end_date}"
+    )
     output_file_name: str = "回测合集.xlsx"
     # 回报拆解直接使用当前数据源计算，不读取或调用其它周报文件。
     decomposition_history_start_date: str = "2017-01-01"

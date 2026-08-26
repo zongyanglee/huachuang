@@ -311,6 +311,23 @@ def fit_inverse_cubic_value(df_data, target_x):
     return inverse_cubic(target_x, *popt), popt
 
 
+def inverse_cubic_condition_number(df_data):
+    df_data = df_data.copy()
+    df_data.replace(0, np.nan, inplace=True)
+    df_data.dropna(subset=["平价", "转股溢价率"], inplace=True)
+    x = df_data["平价"].to_numpy(dtype=float)
+    if len(x) < 4:
+        return np.inf
+
+    design = np.column_stack([
+        1 / np.power(x, 3),
+        1 / np.power(x, 2),
+        1 / x,
+        np.ones_like(x),
+    ])
+    return float(np.linalg.cond(design))
+
+
 def trim_premium_outliers(df_data):
     df_data = df_data.dropna(subset=["平价", "转股溢价率", "换手率"]).copy()
     low = df_data["转股溢价率"].quantile(0.03)
@@ -365,6 +382,7 @@ def build_rolling_frame(new_data, date_range, i, extra_name=None, extra_values=N
         "平价": new_data["平价"][window].values.flatten(),
         "转股溢价率": new_data["转股溢价率"][window].values.flatten(),
         "换手率": new_data["换手率"][window].values.flatten(),
+        "转债代码": new_data["平价"].index.repeat(len(window)),
     })
     if extra_name is not None and extra_values is not None:
         df_data[extra_name] = extra_values.repeat(len(window)).values
@@ -387,6 +405,8 @@ def fit_category_premiums(
     extra_values=None,
     base_selector=None,
     trim_before_selector=False,
+    min_unique_bonds=None,
+    max_condition_number=None,
 ):
     date_range = new_data["平价"].columns
     rows = []
@@ -396,7 +416,7 @@ def fit_category_premiums(
         df_data = df_data[df_data["换手率"] < 50].copy()
         premium_values = []
 
-        for selector, target_x in zip(selectors, target_x_values):
+        for label, selector, target_x in zip(labels, selectors, target_x_values):
             try:
                 if trim_before_selector:
                     df_subset = df_data[base_selector(df_data)].copy()
@@ -404,12 +424,32 @@ def fit_category_premiums(
                     df_subset = df_subset[selector(df_subset)]
                 else:
                     df_subset = df_data[selector(df_data)].copy()
+                    if base_selector is not None:
+                        df_subset = df_subset[base_selector(df_subset)].copy()
                     df_subset = trim_premium_outliers(df_subset)
+
+                if min_unique_bonds is not None:
+                    unique_bonds = df_subset["转债代码"].nunique()
+                    if unique_bonds < min_unique_bonds:
+                        raise ValueError(
+                            f"独立转债数量不足: {unique_bonds} < {min_unique_bonds}"
+                        )
+
+                if max_condition_number is not None:
+                    condition_number = inverse_cubic_condition_number(df_subset)
+                    if (
+                        not np.isfinite(condition_number)
+                        or condition_number > max_condition_number
+                    ):
+                        raise ValueError(
+                            f"拟合矩阵条件数过高: {condition_number:.3e}"
+                        )
 
                 premium, _ = fit_inverse_cubic_value(df_subset, target_x)
                 premium_values.append(premium)
-            except Exception:
-                premium_values.append(0)
+            except Exception as exc:
+                tqdm.write(f"{date_range[i]} {label}拟合已跳过：{exc}")
+                premium_values.append(np.nan)
 
         rows.append([pd.to_datetime(date_range[i])] + premium_values)
 
@@ -508,6 +548,8 @@ def run_category_fit(new_data, result_path, folder_name, mmdd_today, config):
         extra_values=config.get("extra_values"),
         base_selector=config.get("base_selector"),
         trim_before_selector=config.get("trim_before_selector", False),
+        min_unique_bonds=config.get("min_unique_bonds"),
+        max_condition_number=config.get("max_condition_number"),
     )
     append_result_sheet(result_path, df_result, config["sheet_name"])
     plot_category_change(
@@ -556,7 +598,9 @@ def get_category_configs(new_data):
             "extra_name": "行业",
             "extra_values": industry,
             "base_selector": base_0_200,
-            "trim_before_selector": True,
+            "trim_before_selector": False,
+            "min_unique_bonds": 4,
+            "max_condition_number": 1e12,
             "sheet_name": "分板块百元平价拟合溢价率",
             "title": "板块分类拟合溢价率（PCT）",
             "image_name": "【华创固收】板块分类拟合溢价率.jpg",

@@ -47,6 +47,9 @@ with redirect_stdout(io.StringIO()):
 
 SCRIPT_DIR = Path(__file__).resolve().parents[2]
 IMAGE_BUILDER = SCRIPT_DIR / "scripts" / "build_convertible_bond_calendar_image.mjs"
+V21_PRICING_PROJECT_DIR = SCRIPT_DIR / "可转债上市定价"
+V21_PRICING_SCRIPT = V21_PRICING_PROJECT_DIR / "版本登记" / "可转债上市定价_V2.1.py"
+V21_MODEL_VERSION = "cb_listing_v2.1_scarcity_overlay"
 BUNDLED_NODE = Path(
     os.environ.get(
         "CODEX_BUNDLED_NODE",
@@ -409,6 +412,154 @@ def format_subscription_code(value: Any) -> str:
     return text.zfill(6) if text.isdigit() else text
 
 
+def fetch_v21_listing_prices(
+    as_of: date,
+    targets: Iterable[tuple[str, date | None]],
+    trading_dates: list[date],
+) -> tuple[dict[tuple[str, date], float], dict[str, Any]]:
+    """运行正式 V2.1 模型并读取其最终预测价。
+
+    V2.1 只会为已有明确上市日期、且行情和发行因子均完整的转债生成结果。
+    此处按“转债代码 + 上市日期”精确连接，并用日历的 iFinD 交易日序列重算
+    严格 T-1。只有预测信息日等于上市前一交易日、模型摘要截止日与预测信息日
+    一致且不晚于日历统计日时才展示；其余由调用方保留空值。
+    """
+
+    target_keys = {
+        (ensure_market_suffix(code), listed_date)
+        for code, listed_date in targets
+        if str(code).strip() and listed_date is not None
+    }
+    empty_meta = {
+        "model": "上市价格预测V2.1",
+        "model_version": V21_MODEL_VERSION,
+        "status": "无明确上市日目标，未运行",
+        "data_as_of": None,
+        "forecast_count": 0,
+        "matched_count": 0,
+        "display_rule": "仅展示按iFinD交易日历重算的严格T-1预测",
+    }
+    if not target_keys:
+        return {}, empty_meta
+    if not V21_PRICING_SCRIPT.is_file():
+        raise FileNotFoundError(f"未找到上市价格预测V2.1脚本：{V21_PRICING_SCRIPT}")
+
+    # V2.1 的 --project-dir 只控制输出位置。使用临时项目目录可复用正式模型
+    # 和原始输入，同时避免日历运行覆盖项目内的正式预测 CSV / 摘要 JSON。
+    with tempfile.TemporaryDirectory(prefix="cb_v21_calendar_") as temp_project_dir_text:
+        temp_project_dir = Path(temp_project_dir_text)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(V21_PRICING_SCRIPT),
+                "--project-dir",
+                str(temp_project_dir),
+            ],
+            cwd=SCRIPT_DIR,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if completed.returncode != 0:
+            detail_lines = (completed.stderr or "").strip().splitlines()
+            detail = detail_lines[-1] if detail_lines else "无错误详情"
+            raise RuntimeError(
+                f"上市价格预测V2.1运行失败（退出码 {completed.returncode}）：{detail}"
+            )
+        forecast_file = temp_project_dir / "预测" / "v21_current_forecasts.csv"
+        summary_file = temp_project_dir / "版本登记" / "v21_current_summary.json"
+        if not forecast_file.is_file():
+            raise FileNotFoundError(f"V2.1未生成临时预测文件：{forecast_file}")
+        if not summary_file.is_file():
+            raise FileNotFoundError(f"V2.1未生成临时摘要文件：{summary_file}")
+        frame = pd.read_csv(forecast_file, encoding="utf-8-sig")
+        summary = json.loads(summary_file.read_text(encoding="utf-8"))
+    if summary.get("model_version") != V21_MODEL_VERSION:
+        raise RuntimeError(
+            f"V2.1摘要模型版本异常：{summary.get('model_version')!r}"
+        )
+    summary_as_of = parse_ifind_date(summary.get("data_as_of"))
+    if summary_as_of is None:
+        raise RuntimeError("V2.1摘要缺少有效data_as_of")
+
+    required = {
+        "转债代码",
+        "上市日期",
+        "预测信息日",
+        "最终预测价",
+        "模型版本",
+    }
+    if not required.issubset(frame.columns):
+        raise RuntimeError(
+            f"V2.1预测文件缺少字段 {sorted(required - set(frame.columns))}：{list(frame.columns)}"
+        )
+    if frame.empty:
+        return {}, {
+            **empty_meta,
+            "status": "模型已运行，当前无预测",
+        }
+
+    work = frame.copy()
+    work["转债代码"] = work["转债代码"].map(ensure_market_suffix)
+    work["上市日期"] = pd.to_datetime(work["上市日期"], errors="coerce").dt.date
+    work["预测信息日"] = pd.to_datetime(work["预测信息日"], errors="coerce").dt.date
+    work["最终预测价"] = pd.to_numeric(work["最终预测价"], errors="coerce")
+    model_dates = work["预测信息日"].dropna()
+    if not model_dates.empty and set(model_dates) != {summary_as_of}:
+        raise RuntimeError("V2.1预测文件的预测信息日与摘要data_as_of不一致")
+
+    previous_trading_date: dict[tuple[str, date], date] = {}
+    for key in target_keys:
+        listed_date = key[1]
+        if listed_date not in trading_dates:
+            continue
+        index = trading_dates.index(listed_date)
+        if index > 0:
+            previous_trading_date[key] = trading_dates[index - 1]
+
+    target_key_series = pd.Series(
+        list(zip(work["转债代码"], work["上市日期"])),
+        index=work.index,
+    )
+    strict_t1 = pd.Series(False, index=work.index)
+    for index, key in target_key_series.items():
+        expected_date = previous_trading_date.get(key)
+        strict_t1.loc[index] = (
+            expected_date is not None
+            and work.at[index, "预测信息日"] == expected_date
+        )
+    eligible = work.loc[
+        target_key_series.isin(target_keys)
+        & work["模型版本"].astype(str).str.startswith("v2.1_", na=False)
+        & work["预测信息日"].notna()
+        & work["预测信息日"].eq(summary_as_of)
+        & work["预测信息日"].le(as_of)
+        & strict_t1
+        & work["最终预测价"].notna()
+        & work["最终预测价"].gt(0)
+        & work["最终预测价"].lt(float("inf"))
+    ].copy()
+    eligible = eligible.sort_values(["预测信息日", "转债代码", "上市日期"]).drop_duplicates(
+        subset=["转债代码", "上市日期"], keep="last"
+    )
+    prices = {
+        (str(row["转债代码"]), row["上市日期"]): float(row["最终预测价"])
+        for _, row in eligible.iterrows()
+    }
+    return prices, {
+        "model": "上市价格预测V2.1",
+        "model_version": V21_MODEL_VERSION,
+        "status": "模型已运行",
+        "data_as_of": summary_as_of.isoformat(),
+        "forecast_count": int(len(work)),
+        "matched_count": int(len(prices)),
+        "display_rule": "仅展示按iFinD交易日历重算的严格T-1预测",
+    }
+
+
 def build_payload(as_of: date, days: int, ths_id: str | None, ths_password: str | None) -> dict[str, Any]:
     if days <= 0:
         raise ValueError("days 必须为正整数")
@@ -464,6 +615,45 @@ def build_payload(as_of: date, days: int, ths_id: str | None, ths_password: str 
         f"{skipped_unlisted_without_listing or '无'}"
     )
 
+    try:
+        listing_prices, pricing_meta = fetch_v21_listing_prices(
+            as_of,
+            (
+                (bond["转债代码"], parse_ifind_date(bond["上市日期"]))
+                for bond in bonds
+            ),
+            trading_dates,
+        )
+    except Exception as exc:
+        listing_prices = {}
+        pricing_meta = {
+            "model": "上市价格预测V2.1",
+            "model_version": V21_MODEL_VERSION,
+            "status": f"运行失败：{exc}",
+            "data_as_of": None,
+            "forecast_count": 0,
+            "matched_count": 0,
+            "display_rule": "仅展示按iFinD交易日历重算的严格T-1预测",
+        }
+        print(f"[警告] {exc}；日历预测价显示“—”")
+
+    for bond in bonds:
+        listed_date = parse_ifind_date(bond["上市日期"])
+        predicted_price = (
+            listing_prices.get((str(bond["转债代码"]), listed_date))
+            if listed_date is not None
+            else None
+        )
+        bond["上市价格预测V2.1"] = predicted_price
+        if predicted_price is not None:
+            bond["上市价格预测状态"] = "已预测：严格T-1"
+        elif listed_date is None:
+            bond["上市价格预测状态"] = "未覆盖：无明确上市日"
+        elif str(pricing_meta["status"]).startswith("运行失败"):
+            bond["上市价格预测状态"] = "未覆盖：模型运行失败"
+        else:
+            bond["上市价格预测状态"] = "未覆盖：非严格T-1、结果过期或关键输入缺失"
+
     def sort_key(bond: dict[str, Any]) -> tuple[str, str]:
         dates = [value for value in (bond["上市日期"], bond["发行日期"]) if value]
         return (min(dates) if dates else "9999-12-31", str(bond["简称"]))
@@ -478,6 +668,7 @@ def build_payload(as_of: date, days: int, ths_id: str | None, ths_password: str 
             "issuing": "iFinD p04647",
             "pending": "iFinD p04649",
         },
+        "listing_pricing": pricing_meta,
         "unlisted_issue_codes": unlisted_codes,
         "issuing_issue_codes": issuing_codes,
         "pending_issue_codes": pending_codes,
@@ -509,6 +700,8 @@ def render_payload(payload: dict[str, Any], output_dir: Path) -> dict[str, Path]
         "发行规模",
         "债项评级",
         "评级公司",
+        "上市价格预测V2.1",
+        "上市价格预测状态",
         "发行日期",
         "上市日期",
     }
@@ -518,6 +711,14 @@ def render_payload(payload: dict[str, Any], output_dir: Path) -> dict[str, Path]
             key: value for key, value in bond.items() if key in allowed_bond_fields
         }
         normalized["评级公司"] = abbreviate_rating_agency(normalized.get("评级公司"))
+        predicted_price = clean_scalar(normalized.get("上市价格预测V2.1"))
+        normalized["上市价格预测V2.1"] = (
+            float(predicted_price) if predicted_price is not None else None
+        )
+        normalized["上市价格预测状态"] = first_nonempty(
+            normalized.get("上市价格预测状态"),
+            "未提供",
+        )
         normalized_bonds.append(normalized)
     payload["title"] = TITLE
     payload["subtitle"] = SUBTITLE

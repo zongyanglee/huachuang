@@ -78,7 +78,7 @@ async function build(payload, xlsxPath, pngPath) {
   sheet.showGridLines = false;
 
   const dateCount = payload.calendar_dates.length;
-  const totalCols = 6 + dateCount;
+  const totalCols = 8 + dateCount;
   const lastCol = columnName(totalCols);
   const headerRow = 3;
   const firstDataRow = 4;
@@ -109,11 +109,13 @@ async function build(payload, xlsxPath, pngPath) {
 
   const headers = [
     "网上申购代码",
+    "转债代码",
     "简称",
     "所属行业",
     "发行规模\n（亿元）",
     "债项评级",
     "评级公司",
+    "V2.1上市预测价\n（元）",
     ...payload.calendar_dates.map(dateLabel),
   ];
   sheet.getRange(`A${headerRow}:${lastCol}${headerRow}`).values = [headers];
@@ -126,15 +128,27 @@ async function build(payload, xlsxPath, pngPath) {
   };
 
   if (hasBonds) {
-    const baseRows = payload.bonds.map((bond) => [
-      String(bond["网上申购代码"]),
-      bond["简称"],
-      bond["所属行业"],
-      Number(bond["发行规模"]),
-      bond["债项评级"],
-      bond["评级公司"],
-      ...payload.calendar_dates.map(() => null),
-    ]);
+    const baseRows = payload.bonds.map((bond) => {
+      const predictedPrice = bond["上市价格预测V2.1"];
+      const displayPrice =
+        predictedPrice !== null &&
+        predictedPrice !== undefined &&
+        predictedPrice !== "" &&
+        Number.isFinite(Number(predictedPrice))
+          ? Number(predictedPrice)
+          : "—";
+      return [
+        String(bond["网上申购代码"]),
+        String(bond["转债代码"]),
+        bond["简称"],
+        bond["所属行业"],
+        Number(bond["发行规模"]),
+        bond["债项评级"],
+        bond["评级公司"],
+        displayPrice,
+        ...payload.calendar_dates.map(() => null),
+      ];
+    });
     sheet.getRange(`A${firstDataRow}:${lastCol}${lastDataRow}`).values = baseRows;
     sheet.getRange(`A${firstDataRow}:${lastCol}${lastDataRow}`).format = {
       fill: "#FFFFFF",
@@ -143,7 +157,8 @@ async function build(payload, xlsxPath, pngPath) {
       verticalAlignment: "center",
       wrapText: true,
     };
-    sheet.getRange(`D${firstDataRow}:D${lastDataRow}`).format.numberFormat = "0.00";
+    sheet.getRange(`E${firstDataRow}:E${lastDataRow}`).format.numberFormat = "0.00";
+    sheet.getRange(`H${firstDataRow}:H${lastDataRow}`).format.numberFormat = "0.00";
   } else {
     sheet.mergeCells(`A${firstDataRow}:${lastCol}${firstDataRow}`);
     sheet.getRange(`A${firstDataRow}`).values = [["未来5个交易日暂无发行或上市安排"]];
@@ -161,7 +176,7 @@ async function build(payload, xlsxPath, pngPath) {
     payload.calendar_dates.forEach((date, dateIndex) => {
       const cellEvents = events.get(date) ?? [];
       if (!cellEvents.length) return;
-      const cell = sheet.getCell(row - 1, 6 + dateIndex);
+      const cell = sheet.getCell(row - 1, 8 + dateIndex);
       cell.values = [[cellEvents.map((event) => event.label).join("，")]];
       const chosen = cellEvents.find((event) => event.colorKey === "上市") ?? cellEvents[0];
       cell.format = {

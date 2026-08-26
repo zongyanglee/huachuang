@@ -1,0 +1,7 @@
+interface:
+  display_name: "固收与可转债量化研究团队"
+  short_description: "编排研究、数据、方法、回测、复现与报告角色"
+  default_prompt: "Use $fixed-income-cb-quant-team to organize a research-only fixed-income or convertible-bond quantitative study. Do not perform live trading or account operations."
+policy:
+  allow_implicit_invocation: true
+

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -28,6 +29,7 @@ INDEX_VALUE = "指数值"
 MASTER_SHEET = "总表"
 INDEX_SHEET = "指数"
 TQDM_NCOLS = 92
+WINDOWS_REPLACE_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0, 4.0, 4.0)
 
 MONTHLY_METRICS = [
     "余额",
@@ -194,6 +196,31 @@ def _table_from_frame(frame: pd.DataFrame, schema: pa.Schema) -> pa.Table:
     return pa.Table.from_arrays(arrays, schema=schema)
 
 
+def _replace_file_with_retry(temp_path: Path, path: Path) -> None:
+    """Replace a file atomically, tolerating short-lived Windows file locks."""
+
+    waited = 0.0
+    for attempt, delay in enumerate((*WINDOWS_REPLACE_RETRY_DELAYS, None), start=1):
+        try:
+            os.replace(temp_path, path)
+            return
+        except OSError as exc:
+            transient_lock = (
+                isinstance(exc, PermissionError)
+                or getattr(exc, "winerror", None) in {5, 32}
+            )
+            if not transient_lock or delay is None:
+                if transient_lock:
+                    raise PermissionError(
+                        f"{path}: 文件持续被其他进程占用，等待 {waited:.2f} 秒、"
+                        f"重试 {attempt - 1} 次后仍无法替换。请暂停 Git/LFS 同步、"
+                        "关闭占用该文件的 Python/Excel 进程后重试。"
+                    ) from exc
+                raise
+            time.sleep(delay)
+            waited += delay
+
+
 def write_typed_parquet(frame: pd.DataFrame, path: str | Path, schema: pa.Schema) -> None:
     """Write a validated Parquet file atomically beside its final path."""
 
@@ -214,7 +241,7 @@ def write_typed_parquet(frame: pd.DataFrame, path: str | Path, schema: pa.Schema
         if reread.schema != schema or reread.num_rows != len(frame):
             raise RuntimeError(f"{path}: Parquet 回读校验失败")
         del reread
-        os.replace(temp_path, path)
+        _replace_file_with_retry(temp_path, path)
     finally:
         if temp_path.exists():
             temp_path.unlink()

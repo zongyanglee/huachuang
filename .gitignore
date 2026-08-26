@@ -32,6 +32,8 @@ node_modules/
 .codex_tmp*/
 .codex_doc_review/
 _tmp*/
+.agents/skills/*-workspace/
+.agents/skills/skill-creator/
 
 # Logs and temporary files
 *.log
@@ -52,6 +54,7 @@ _tmp*/
 *.jpg
 *.jpeg
 *.ttf
+/【华创固收】转债日报*.txt
 
 # Existing legacy exclusions
 .cache_recovered_data/

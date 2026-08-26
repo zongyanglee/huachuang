@@ -2053,10 +2053,10 @@ def build_trade_date_index(date_query_res, start_date="2015-01-01"):
     return trade_dates
 
 
-def clip_trade_dates_before_data_ready(api_dates, cutoff_hour=17, now=None):
+def clip_trade_dates_before_data_ready(api_dates, cutoff_hour=16, now=None):
     """若运行日恰好是日历最新交易日且尚未到 cutoff_hour，则剔除当天，更新至上一交易日。
 
-    盘后许多截面数据要到傍晚才齐；在最新交易日过早更新容易缺数，因此默认 17 点前
+    盘后许多截面数据要到傍晚才齐；在最新交易日过早更新容易缺数，因此默认 16 点前
     不把“当天”纳入更新截止日。非交易日运行、或已过 cutoff，则原样返回。
     """
     if not api_dates:
@@ -2490,8 +2490,8 @@ def main():
     yyyymmdd_today = str(pytime.strftime("%Y-%m-%d", pytime.localtime()))
     date_query_res = THS_Date_Query('212001', 'mode:1,dateType:0,period:D,dateFormat:0', '2010-01-01', yyyymmdd_today).data
     api_dates = parse_api_dates_from_query_result(date_query_res)
-    # 若当天就是最新交易日且未到 17 点，多数数据尚未齐备，更新截止日回退至上一交易日
-    api_dates = clip_trade_dates_before_data_ready(api_dates, cutoff_hour=17)
+    # 若当天就是最新交易日且未到 16 点，多数数据尚未齐备，更新截止日回退至上一交易日
+    api_dates = clip_trade_dates_before_data_ready(api_dates, cutoff_hour=16)
     global_max_date_str = max(api_dates).strftime('%Y-%m-%d')
     print(f"✅ API 交易日历获取成功，共 {len(api_dates)} 天。更新截止交易日: {global_max_date_str}")
 
