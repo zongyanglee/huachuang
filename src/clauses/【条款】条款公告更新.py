@@ -1708,6 +1708,12 @@ def run_redemption_update():
         stop_conversion_date: date | None = None
         redemption_registration_date: date | None = None
         redemption_date: date | None = None
+        redemption_price: float | None = None
+        redemption_funds_arrival_date: date | None = None
+        issuer_funds_arrival_date: date | None = None
+        redemption_condition_met_date: date | None = None
+        redemption_category: str = ""
+        last_trading_bond_name: str = ""
         redemption_schedule_pending: bool = False
         commitment_start: date | None = None
         commitment_deadline: date | None = None
@@ -2526,13 +2532,42 @@ def run_redemption_update():
 
     def extract_strong_redemption_fields(text: str) -> dict:
         compact = re.sub(r"\s+", "", text or "")
+        price_match = re.search(
+            r"(?:可转债)?赎回价格(?:为|[:：])?([0-9]+(?:\.[0-9]+)?)元/张",
+            compact,
+        )
+        category_match = re.search(r"赎回类别(?:为|[:：])?(全部赎回|部分赎回)", compact)
+        last_name_match = re.search(
+            r"最后一个交易日可转债简称(?:为|[:：])?(.{1,20}?)(?=\d{1,2}、|[，。；;]|$)",
+            compact,
+        )
         fields = {
             "stop_trading_date": extract_labeled_date(compact, ("停止交易日", "最后交易日")),
             "stop_conversion_date": extract_labeled_date(compact, ("停止转股日", "最后转股日")),
             "redemption_registration_date": extract_labeled_date(compact, ("赎回登记日", "赎回股权登记日")),
-            "redemption_date": extract_labeled_date(compact, ("赎回日", "赎回款发放日", "赎回资金到账日")),
+            "redemption_date": extract_labeled_date(compact, ("可转债赎回日", "赎回日")),
+            "redemption_price": float(price_match.group(1)) if price_match else None,
+            "redemption_funds_arrival_date": extract_labeled_date(
+                compact,
+                ("可转债赎回资金到账日", "赎回资金到账日", "赎回款发放日"),
+            ),
+            "issuer_funds_arrival_date": extract_labeled_date(
+                compact,
+                ("发行人赎回资金到账日", "发行人资金到账日"),
+            ),
+            "redemption_condition_met_date": extract_labeled_date(
+                compact,
+                ("可转债赎回条件满足日", "赎回条件满足日"),
+            ),
+            "redemption_category": category_match.group(1) if category_match else "",
+            "last_trading_bond_name": last_name_match.group(1) if last_name_match else "",
         }
-        fields["redemption_schedule_pending"] = not any(fields.values()) or bool(
+        disclosed_fields = [
+            value
+            for key, value in fields.items()
+            if key not in {"redemption_category", "last_trading_bond_name"}
+        ]
+        fields["redemption_schedule_pending"] = not any(disclosed_fields) or bool(
             re.search(
                 r"(?:赎回安排|具体安排|后续安排).{0,40}(?:尚未|另行|后续|届时).{0,40}(?:公告|披露)|"
                 r"(?:尚未|暂未).{0,20}(?:确定|明确).{0,40}(?:赎回安排|具体安排)",
@@ -2557,6 +2592,12 @@ def run_redemption_update():
                 row.stop_conversion_date = extracted["stop_conversion_date"]
                 row.redemption_registration_date = extracted["redemption_registration_date"]
                 row.redemption_date = extracted["redemption_date"]
+                row.redemption_price = extracted["redemption_price"]
+                row.redemption_funds_arrival_date = extracted["redemption_funds_arrival_date"]
+                row.issuer_funds_arrival_date = extracted["issuer_funds_arrival_date"]
+                row.redemption_condition_met_date = extracted["redemption_condition_met_date"]
+                row.redemption_category = extracted["redemption_category"]
+                row.last_trading_bond_name = extracted["last_trading_bond_name"]
                 row.redemption_schedule_pending = extracted["redemption_schedule_pending"]
             except Exception as exc:
                 row.redemption_schedule_pending = True
@@ -3082,10 +3123,20 @@ def run_redemption_update():
             ("停止转股日", row.stop_conversion_date),
             ("赎回登记日", row.redemption_registration_date),
             ("赎回日", row.redemption_date),
+            ("赎回资金到账日", row.redemption_funds_arrival_date),
+            ("发行人赎回资金到账日", row.issuer_funds_arrival_date),
+            ("赎回条件满足日", row.redemption_condition_met_date),
         ]
         for label, value in date_fields:
             if value:
                 lines.append(f"{label}：{format_cn_date(value)}")
+        if row.redemption_price is not None:
+            price = f"{row.redemption_price:.6f}".rstrip("0").rstrip(".")
+            lines.append(f"赎回价格：{price}元/张")
+        if row.redemption_category:
+            lines.append(f"赎回类别：{row.redemption_category}")
+        if row.last_trading_bond_name:
+            lines.append(f"最后一个交易日可转债简称：{row.last_trading_bond_name}")
         if len(lines) == 1 and row.redemption_schedule_pending:
             lines.append("赎回安排尚未公告")
         return lines
