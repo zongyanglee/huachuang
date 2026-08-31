@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 from configparser import ConfigParser
+from contextlib import redirect_stdout
+import io
 import json
 import math
 import os
@@ -13,9 +15,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
+import zipfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
+from unicodedata import east_asian_width
 
 import matplotlib
 
@@ -30,7 +35,9 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import pythoncom
 import win32com.client
-from iFinDPy import THS_DR, THS_DS, THS_DataStatistics, THS_GetErrorInfo, THS_iFinDLogin
+
+with redirect_stdout(io.StringIO()):
+    from iFinDPy import THS_DR, THS_DS, THS_GetErrorInfo, THS_iFinDLogin
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
@@ -38,6 +45,7 @@ FONT_PATH = WORKSPACE / "assets/fonts/KaiTi_GB2312.ttf"
 TITLE_FONT_PATH = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simhei.ttf"
 CHART_FONT_PATH = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "STKAITI.TTF"
 REPORT_HEADER_PATH = WORKSPACE / "assets/images/条款表头.png"
+REPORT_HEADER_FONT_SIZE = 72
 CB_PARQUET_ROOT = WORKSPACE / "data/转债个券历史序列"
 CB_MASTER_PARQUET = CB_PARQUET_ROOT / "_special" / "总表.parquet"
 INDEX_PARQUET = CB_PARQUET_ROOT / "_special" / "指数.parquet"
@@ -51,19 +59,41 @@ CODEX_DEPENDENCIES = (
 BUNDLED_NODE = CODEX_DEPENDENCIES / "node" / "bin" / "node.exe"
 BUNDLED_NODE_MODULES = CODEX_DEPENDENCIES / "node" / "node_modules"
 MARGIN_BALANCE_START_DATE = date(2024, 1, 1)
+MARGIN_BALANCE_MAX_DAILY_CHANGE_RATIO = 0.10
 VALUATION_START_DATE = date(2019, 1, 1)
+INDEX_TURNOVER_REQUEST_ATTEMPTS = 2
+INDEX_TURNOVER_RETRY_DELAY_SECONDS = 3.0
 INVERSE_CUBIC_VALUATION_NAME = "百元拟合溢价率"
 MULTIFACTOR_VALUATION_NAME = "多因子修正百元拟合溢价率"
+CB_INDEX_PARQUET_NAME = "转债指数"
+VALUATION_REPAIR_WINDOW = 100
+VALUATION_REPAIR_FORWARD_TRADING_DAYS = 70
+VALUATION_REPAIR_INDEX_NAME = "转债估值修复指数"
+VALUATION_REPAIR_FORWARD_RETURN_NAME = "中证转债指数后推70日涨跌幅"
+VALUATION_REPAIR_PLOT_START_DATE = date(2024, 1, 1)
 PARITY_GROUP_VALUATION_PREFIX = "多因子修正拟合溢价率_分平价_"
 PARITY_GROUP_SPECS = tuple(
     (group, f"{PARITY_GROUP_VALUATION_PREFIX}{group}")
     for group in ("70-90", "90-110", "110-130", "130-150")
+)
+PARITY_INTERVAL_PREMIUM_COLUMNS = (
+    "130以上",
+    "120-130（含130）",
+    "110-120（含120）",
+    "100-110（含110）",
+    "90-100（含100）",
+    "80-90（含90）",
+    "80以下（含80）",
+)
+PARITY_INTERVAL_PREMIUM_ASCENDING_COLUMNS = tuple(
+    reversed(PARITY_INTERVAL_PREMIUM_COLUMNS)
 )
 EQUITY_BOND_GROUP_PREFIX = "多因子修正拟合溢价率_股债型_"
 EQUITY_BOND_GROUP_SPECS = tuple(
     (group, f"{EQUITY_BOND_GROUP_PREFIX}{group}")
     for group in ("偏股型", "平衡型", "偏债型")
 )
+EQUITY_BOND_TYPE_GROUPS = ("偏股型", "平衡型", "偏债型")
 RATING_GROUP_PREFIX = "多因子修正拟合溢价率_分评级_"
 RATING_GROUP_SPECS = tuple(
     (group, f"{RATING_GROUP_PREFIX}{group}")
@@ -126,6 +156,74 @@ SECTOR_MEAN_METRICS = (
     ("转股溢价率", "各行业平均转股溢价率", "%"),
     ("纯债溢价率", "各行业平均纯债溢价率", "%"),
 )
+SECTOR_MEAN_PLOT_START_DATE = pd.Timestamp("2023-01-01")
+INDUSTRY_INDEX_SPECS = (
+    ("801960.SI", "石油石化"),
+    ("801010.SI", "农林牧渔"),
+    ("801030.SI", "基础化工"),
+    ("801130.SI", "纺织服饰"),
+    ("801200.SI", "商贸零售"),
+    ("801040.SI", "钢铁"),
+    ("801180.SI", "房地产"),
+    ("801170.SI", "交通运输"),
+    ("801210.SI", "社会服务"),
+    ("801050.SI", "有色金属"),
+    ("801710.SI", "建筑材料"),
+    ("801120.SI", "食品饮料"),
+    ("801140.SI", "轻工制造"),
+    ("801720.SI", "建筑装饰"),
+    ("801950.SI", "煤炭"),
+    ("801760.SI", "传媒"),
+    ("801980.SI", "美容护理"),
+    ("801740.SI", "国防军工"),
+    ("801880.SI", "汽车"),
+    ("801750.SI", "计算机"),
+    ("801160.SI", "公用事业"),
+    ("801970.SI", "环保"),
+    ("801790.SI", "非银金融"),
+    ("801110.SI", "家用电器"),
+    ("801780.SI", "银行"),
+    ("801730.SI", "电力设备"),
+    ("801150.SI", "医药生物"),
+    ("801890.SI", "机械设备"),
+    ("801770.SI", "通信"),
+    ("801080.SI", "电子"),
+)
+INDUSTRY_HISTORY_ORDER = (
+    "农林牧渔",
+    "基础化工",
+    "传媒",
+    "电力设备",
+    "电子",
+    "房地产",
+    "纺织服饰",
+    "非银金融",
+    "钢铁",
+    "公用事业",
+    "国防军工",
+    "环保",
+    "机械设备",
+    "计算机",
+    "家用电器",
+    "建筑材料",
+    "建筑装饰",
+    "交通运输",
+    "煤炭",
+    "汽车",
+    "轻工制造",
+    "商贸零售",
+    "社会服务",
+    "石油石化",
+    "食品饮料",
+    "通信",
+    "医药生物",
+    "银行",
+    "有色金属",
+    "美容护理",
+)
+INDUSTRY_HISTORY_METRICS = ("收盘价", "转股溢价率", "平价", "纯债溢价率")
+INDUSTRY_EXTREME_PRICE_THRESHOLD = 150.0
+INDUSTRY_EXTREME_PREMIUM_THRESHOLD = 50.0
 CLOSE_PRICE_DISTRIBUTION_LABELS = (
     "80以下（含80）",
     "80-90（含90）",
@@ -1392,6 +1490,43 @@ function addClassificationValuationSheet() {
 }
 
 
+function addEquityBondWeightedSheet() {
+  const sheet = workbook.worksheets.add("股债性加权指标");
+  const rows = newestFirst(payload.equityBondWeighted).map((row) => [
+    excelDate(row.date),
+    row.stockPremium, row.balancePremium, row.bondPremium,
+    row.stockPrice, row.balancePrice, row.bondPrice,
+  ]);
+  if (rows.length < 2) {
+    throw new Error("股债性分类余额加权底稿数据不足");
+  }
+  sheet.getRange("A1:G1").merge();
+  sheet.getRange("A1").values = [["股债性分类余额加权转股溢价率与均价"]];
+  sheet.getRange("A2:G2").merge();
+  sheet.getRange("A2").values = [[
+    `数据来源：${payload.equityBondWeightedSource.parquetRoot}｜区间：${payload.equityBondWeightedSource.startDate} 至 ${payload.equityBondWeightedSource.runDate}｜口径：${payload.equityBondWeightedSource.sampleRule}`,
+  ]];
+  sheet.getRange("A3:G3").values = [[
+    "交易日期", "偏股型转股溢价率（%）", "平衡型转股溢价率（%）", "偏债型转股溢价率（%）",
+    "偏股型均价", "平衡型均价", "偏债型均价",
+  ]];
+  sheet.getRangeByIndexes(3, 0, rows.length, 7).values = rows;
+  const lastRow = rows.length + 3;
+  styleSheet(
+    sheet,
+    sheet.getRange("A1:G1"),
+    sheet.getRange("A2:G2"),
+    sheet.getRange("A3:G3"),
+    sheet.getRange(`A4:G${lastRow}`),
+  );
+  sheet.getRange(`A4:A${lastRow}`).format.numberFormat = "yyyy-mm-dd";
+  sheet.getRange(`B4:G${lastRow}`).format.numberFormat = "0.00";
+  sheet.getRange(`A1:A${lastRow}`).format.columnWidth = 16;
+  sheet.getRange(`B1:D${lastRow}`).format.columnWidth = 20;
+  sheet.getRange(`E1:G${lastRow}`).format.columnWidth = 16;
+}
+
+
 function addSectorAndPriceDistributionSheet() {
   const sheet = workbook.worksheets.add("板块与价格分布");
   const sectorRows = newestFirst(payload.sectorGroupValuation).map((row) => [
@@ -1557,17 +1692,369 @@ function addSectorMeanMetricsSheet() {
 }
 
 
-addMarketSheet();
-addMainMoneyFlowSheet();
-addEtfShareSheet();
-addSubnewBondSheet();
-addIndexSheet();
-addReturnDistributionSheet();
-addIndexPerformanceSheet();
-addValuationSheet();
-addClassificationValuationSheet();
-addSectorAndPriceDistributionSheet();
-addSectorMeanMetricsSheet();
+function addIndustryPerformanceSheet() {
+  const sheet = workbook.worksheets.add("行业涨跌与估值");
+  sheet.showGridLines = false;
+  sheet.freezePanes.freezeRows(2);
+  sheet.getRange("A1:A2").merge();
+  sheet.getRange("B1:E1").merge();
+  sheet.getRange("F1:I1").merge();
+  sheet.getRange("J1:O1").merge();
+  sheet.getRange("A1").values = [["名称"]];
+  sheet.getRange("B1").values = [["正股"]];
+  sheet.getRange("F1").values = [["转债"]];
+  sheet.getRange("J1").values = [["正股估值分位数"]];
+  sheet.getRange("B2:O2").values = [[
+    "日涨跌幅", "周涨跌幅", "月涨跌幅", "年初至今涨跌幅",
+    "日涨跌幅", "周涨跌幅", "月涨跌幅", "年初至今涨跌幅",
+    "PE（TTM）", "3年分位数", "10年分位数",
+    "PB（LF）", "3年分位数", "10年分位数",
+  ]];
+  sheet.getRange("A1:O2").format = {
+    fill: "#203864",
+    font: { name: BODY_FONT, bold: true, color: "#FFFFFF", size: 10 },
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+    wrapText: true,
+    borders: { preset: "all", style: "thin", color: "#000000" },
+  };
+  sheet.getRange("A1:O1").format.rowHeight = 24;
+  sheet.getRange("A2:O2").format.rowHeight = 32;
+
+  const rows = payload.industryPerformance.map((row) => [
+    row.name,
+    row.stockDaily,
+    row.stockWeekly,
+    row.stockMonthly,
+    row.stockYtd,
+    row.bondDaily === null ? null : row.bondDaily / 100,
+    row.bondWeekly === null ? null : row.bondWeekly / 100,
+    row.bondMonthly === null ? null : row.bondMonthly / 100,
+    row.bondYtd === null ? null : row.bondYtd / 100,
+    row.pe,
+    row.pe3y,
+    row.pe10y,
+    row.pb,
+    row.pb3y,
+    row.pb10y,
+  ]);
+  const lastRow = rows.length + 2;
+  sheet.getRangeByIndexes(2, 0, rows.length, 15).values = rows;
+  sheet.getRange(`A3:O${lastRow}`).format = {
+    font: { name: BODY_FONT, color: "#000000", size: 10 },
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+    borders: { preset: "all", style: "thin", color: "#000000" },
+  };
+  sheet.getRange(`A3:O${lastRow}`).format.rowHeight = 21;
+  sheet.getRange(`B3:E${lastRow}`).format.numberFormat = "0.00";
+  sheet.getRange(`F3:I${lastRow}`).format.numberFormat = "0.00%";
+  sheet.getRange(`J3:O${lastRow}`).format.numberFormat = "0.00";
+  sheet.getRange(`B3:E${lastRow}`).conditionalFormats.add("colorScale", {
+    colors: ["#5B9BD5", "#FFFFFF", "#F8696B"],
+    thresholds: ["min", 0, "max"],
+  });
+  sheet.getRange(`F3:I${lastRow}`).conditionalFormats.add("colorScale", {
+    colors: ["#63BE7B", "#FFEB84", "#F8696B"],
+    thresholds: ["min", 0, "max"],
+  });
+  for (const range of [`B3:E${lastRow}`, `F3:I${lastRow}`]) {
+    sheet.getRange(range).conditionalFormats.add("cellIs", {
+      operator: "lessThan",
+      formula: 0,
+      format: { font: { color: "#FF0000" } },
+    });
+  }
+  for (const range of [`K3:K${lastRow}`, `N3:N${lastRow}`]) {
+    sheet.getRange(range).conditionalFormats.add("dataBar", {
+      color: "#5B9BD5",
+      gradient: true,
+    });
+  }
+  for (const range of [`L3:L${lastRow}`, `O3:O${lastRow}`]) {
+    sheet.getRange(range).conditionalFormats.add("dataBar", {
+      color: "#FF6666",
+      gradient: true,
+    });
+  }
+  sheet.getRange(`A1:A${lastRow}`).format.columnWidth = 14;
+  sheet.getRange(`B1:I${lastRow}`).format.columnWidth = 12;
+  sheet.getRange(`J1:J${lastRow}`).format.columnWidth = 11;
+  sheet.getRange(`K1:L${lastRow}`).format.columnWidth = 13;
+  sheet.getRange(`M1:M${lastRow}`).format.columnWidth = 11;
+  sheet.getRange(`N1:O${lastRow}`).format.columnWidth = 13;
+
+  sheet.getRange("Q1:AB1").merge();
+  sheet.getRange("Q1").values = [["行业代码、Wind公式与转债样本数（审计）"]];
+  sheet.getRange("Q2:AB2").values = [[
+    "行业代码", "日涨跌幅公式", "周涨跌幅公式", "月涨跌幅公式", "年初至今公式",
+    "PE公式", "PE三年公式", "PE十年公式", "PB公式", "PB三年公式", "PB十年公式",
+    "转债当日样本数",
+  ]];
+  const auditRows = payload.industryPerformance.map((row) => [
+    row.code,
+    `公式：${row.stockDailyFormula}`,
+    `公式：${row.stockWeeklyFormula}`,
+    `公式：${row.stockMonthlyFormula}`,
+    `公式：${row.stockYtdFormula}`,
+    `公式：${row.peFormula}`,
+    `公式：${row.pe3yFormula}`,
+    `公式：${row.pe10yFormula}`,
+    `公式：${row.pbFormula}`,
+    `公式：${row.pb3yFormula}`,
+    `公式：${row.pb10yFormula}`,
+    row.bondSampleCount,
+  ]);
+  sheet.getRangeByIndexes(2, 16, auditRows.length, 12).values = auditRows;
+  sheet.getRange(`Q1:AB2`).format = {
+    fill: REPORT_BLUE,
+    font: { name: BODY_FONT, bold: true, color: "#FFFFFF", size: 9 },
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+    wrapText: true,
+    borders: { preset: "all", style: "thin", color: REPORT_BLUE },
+  };
+  sheet.getRange(`Q3:AB${lastRow}`).format = {
+    font: { name: BODY_FONT, color: "#000000", size: 9 },
+    borders: { preset: "all", style: "thin", color: GRID },
+    wrapText: false,
+  };
+  sheet.getRange(`Q1:Q${lastRow}`).format.columnWidth = 13;
+  sheet.getRange(`R1:AA${lastRow}`).format.columnWidth = 34;
+  sheet.getRange(`AB1:AB${lastRow}`).format.columnWidth = 14;
+
+  const noteRow = lastRow + 2;
+  sheet.getRange(`A${noteRow}:O${noteRow + 1}`).merge();
+  sheet.getRange(`A${noteRow}`).values = [[
+    `数据来源：正股为${payload.industryPerformanceSource.equity.source}；` +
+    `转债为${payload.industryPerformanceSource.convertibleBond.parquetRoot}。` +
+    `排序：${payload.industryPerformanceSource.sortRule}。` +
+    `转债口径：${payload.industryPerformanceSource.convertibleBond.sampleRule}；` +
+    `${payload.industryPerformanceSource.convertibleBond.returnRule}`,
+  ]];
+  sheet.getRange(`A${noteRow}:O${noteRow + 1}`).format = {
+    fill: LIGHT_BLUE,
+    font: { name: BODY_FONT, color: "#404040", size: 9 },
+    verticalAlignment: "center",
+    wrapText: true,
+  };
+}
+
+
+function addPureDataSheet(name, headers, rows, formats = {}, dateFormats = { 0: "yyyy-mm-dd" }) {
+  const sheet = workbook.worksheets.add(name);
+  sheet.showGridLines = false;
+  sheet.freezePanes.freezeRows(1);
+  sheet.getRangeByIndexes(0, 0, 1, headers.length).values = [headers];
+  sheet.getRangeByIndexes(0, 0, 1, headers.length).format = {
+    font: { name: BODY_FONT, bold: true, color: "#000000", size: 10 },
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+    borders: { preset: "bottom", style: "thin", color: "#000000" },
+  };
+  sheet.getRangeByIndexes(0, 0, 1, headers.length).format.rowHeight = 20;
+  if (rows.length > 0) {
+    sheet.getRangeByIndexes(1, 0, rows.length, headers.length).values = rows;
+    sheet.getRangeByIndexes(1, 0, rows.length, headers.length).format = {
+      font: { name: BODY_FONT, color: "#000000", size: 10 },
+      verticalAlignment: "center",
+    };
+    for (const [column, format] of Object.entries(dateFormats)) {
+      sheet.getRangeByIndexes(1, Number(column), rows.length, 1).format.numberFormat = format;
+    }
+    for (const [column, format] of Object.entries(formats)) {
+      sheet.getRangeByIndexes(1, Number(column), rows.length, 1).format.numberFormat = format;
+    }
+  }
+  for (let column = 0; column < headers.length; column += 1) {
+    const width = column === 0 ? 16 : 18;
+    sheet.getRangeByIndexes(0, column, Math.max(1, rows.length + 1), 1).format.columnWidth = width;
+  }
+}
+
+
+function addIndexPerformanceReportSheet() {
+  const sheet = workbook.worksheets.add("指数表现");
+  const mainRows = payload.indexPerformance.filter((row) => row.group === "主要指数");
+  const styleRows = payload.indexPerformance.filter((row) => row.group === "风格指数");
+  if (payload.indexPerformance.length > 0 && (mainRows.length !== 9 || styleRows.length !== 9)) {
+    throw new Error(`指数表现底稿分组数量异常：主要指数${mainRows.length}，风格指数${styleRows.length}`);
+  }
+  const valuesFor = (row) => row
+    ? [
+        row.name,
+        row.close,
+        (row.close / row.dailyBaseClose - 1) * 100,
+        (row.close / row.weekBaseClose - 1) * 100,
+        (row.close / row.monthBaseClose - 1) * 100,
+        (row.close / row.yearBaseClose - 1) * 100,
+      ]
+    : [null, null, null, null, null, null];
+  const rows = Array.from({ length: 9 }, (_, position) => [
+    ...valuesFor(mainRows[position]),
+    ...valuesFor(styleRows[position]),
+  ]);
+
+  sheet.showGridLines = false;
+  sheet.freezePanes.freezeRows(2);
+  sheet.getRange("A1:L1").merge();
+  sheet.getRange("A1").values = [["图表 1  主要市场指数"]];
+  sheet.getRange("A2:L2").values = [[
+    "主要指数", "收盘价", "日涨跌幅", "近一周", "近一月", "年初至今",
+    "主要指数", "收盘价", "日涨跌幅", "近一周", "近一月", "年初至今",
+  ]];
+  sheet.getRange("A3:L11").values = rows;
+  sheet.getRange("A12:L12").merge();
+  sheet.getRange("A12").values = [["资料来源：Wind，华创证券"]];
+
+  sheet.getRange("A1:L1").format = {
+    font: { name: TITLE_FONT, bold: true, color: "#000000", size: 12 },
+    horizontalAlignment: "left",
+    verticalAlignment: "center",
+    borders: { preset: "bottom", style: "medium", color: "#000000" },
+  };
+  sheet.getRange("A1:L1").format.rowHeight = 25;
+  sheet.getRange("A2:L2").format = {
+    fill: LIGHT_BLUE,
+    font: { name: BODY_FONT, bold: true, color: "#000000", size: 10 },
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+    borders: { preset: "all", style: "thin", color: GRID },
+  };
+  sheet.getRange("A2:L2").format.rowHeight = 22;
+  sheet.getRange("A3:L11").format = {
+    font: { name: BODY_FONT, color: "#000000", size: 10 },
+    verticalAlignment: "center",
+    borders: { preset: "all", style: "thin", color: GRID },
+  };
+  sheet.getRange("A3:A11").format.horizontalAlignment = "left";
+  sheet.getRange("G3:G11").format.horizontalAlignment = "left";
+  sheet.getRange("B3:F11").format.horizontalAlignment = "right";
+  sheet.getRange("H3:L11").format.horizontalAlignment = "right";
+  sheet.getRange("A3:L11").format.rowHeight = 20;
+  sheet.getRange("B3:F11").format.numberFormat = "0.00";
+  sheet.getRange("H3:L11").format.numberFormat = "0.00";
+  for (const range of ["C3:F11", "I3:L11"]) {
+    sheet.getRange(range).conditionalFormats.add("cellIs", {
+      operator: "lessThan",
+      formula: 0,
+      format: { font: { color: NEGATIVE_RED } },
+    });
+  }
+  sheet.getRange("A12:L12").format = {
+    font: { name: BODY_FONT, color: "#000000", size: 9 },
+    horizontalAlignment: "left",
+    verticalAlignment: "center",
+    borders: { preset: "top", style: "thin", color: "#000000" },
+  };
+  sheet.getRange("A12:L12").format.rowHeight = 20;
+  for (const column of ["A", "G"]) {
+    sheet.getRange(`${column}1:${column}12`).format.columnWidth = 16;
+  }
+  for (const column of ["B", "C", "D", "E", "F", "H", "I", "J", "K", "L"]) {
+    sheet.getRange(`${column}1:${column}12`).format.columnWidth = 12;
+  }
+}
+
+
+function addRawChartSheets() {
+  const newest = (rows, makeRow) => newestFirst(rows).map(makeRow);
+  const add = (name, headers, rows, formats = {}, dateFormats = { 0: "yyyy-mm-dd" }) => addPureDataSheet(name, headers, rows, formats, dateFormats);
+
+  addIndexPerformanceReportSheet();
+  add("成交额", ["日期", "上证指数（亿元）", "深证成指（亿元）", "中证转债（亿元）", "沪深合计（亿元）"], newest(payload.index, (row) => [excelDate(row.date), row.shanghai, row.shenzhen, row.convertibleBond, row.total]), { 1: "#,##0.00", 2: "#,##0.00", 3: "#,##0.00", 4: "#,##0.00" });
+  add("涨跌幅分布", ["涨跌幅区间", "转债数量"], payload.returnDistribution.map((row) => [row.bucket, row.count]), { 1: "#,##0" }, {});
+  add("主力净流入", ["日期", "主力净流入（亿元）"], newest(payload.mainMoneyFlow, (row) => [excelDate(row.date), row.amount]), { 1: "#,##0.00" });
+  add("两融余额", ["日期", "融资融券余额（亿元）"], newest(payload.market, (row) => [excelDate(row.date), row.balance]), { 1: "#,##0.00" });
+  add("百元拟合溢价率", ["日期", "百元拟合溢价率（%）", "多因子修正百元拟合溢价率（%）"], newest(payload.valuationDaily, (row) => [excelDate(row.date), row.inverseCubic, row.multifactor]), { 1: "0.00", 2: "0.00" });
+  add("盘中百元平价拟合溢价率", ["日期时间", "拟合溢价率（%）"], payload.valuationIntraday.map((row) => [excelDateTime(row.datetime), row.premium]), { 1: "0.00" }, { 0: "yyyy-mm-dd hh:mm" });
+  add("转债估值修复指数", ["日期", "转债估值修复指数", "中证转债指数后推70日涨跌幅（%）"], newest(payload.valuationRepair, (row) => [excelDate(row.date), row.repair, row.forwardReturn]), { 1: "0.00", 2: "0.00" });
+  add("余额加权平价与收盘价中位数", ["日期", "余额加权平价", "收盘价中位数"], newest(payload.priceParity, (row) => [excelDate(row.date), row.weightedParity, row.medianClose]), { 1: "0.00", 2: "0.00" });
+  add("股债性分类转股溢价率", ["日期", "偏股型（%）", "平衡型（%）", "偏债型（%）"], newest(payload.equityBondWeighted, (row) => [excelDate(row.date), row.stockPremium, row.balancePremium, row.bondPremium]), { 1: "0.00", 2: "0.00", 3: "0.00" });
+  add("分平价区间转股溢价率", ["日期", "130以上（%）", "120-130（含130）（%）", "110-120（含120）（%）", "100-110（含110）（%）", "90-100（含100）（%）", "80-90（含90）（%）", "80以下（含80）（%）"], newest(payload.parityIntervalPremium, (row) => [excelDate(row.date), row.above130, row.p120_130, row.p110_120, row.p100_110, row.p90_100, row.p80_90, row.le80]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00", 6: "0.00", 7: "0.00" });
+  add("平价分类拟合溢价率", ["日期", "70-90（%）", "90-110（%）", "110-130（%）", "130-150（%）"], newest(payload.parityGroupValuation, (row) => [excelDate(row.date), row.group70_90, row.group90_110, row.group110_130, row.group130_150]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00" });
+  add("分剩余期限拟合溢价率", ["日期", "0-1（%）", "1-2（%）", "2-3（%）", "3-4（%）", "4-5（%）", "5-6（%）"], newest(payload.maturityGroupValuation, (row) => [excelDate(row.date), row.group0_1, row.group1_2, row.group2_3, row.group3_4, row.group4_5, row.group5_6]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00", 6: "0.00" });
+  add("次新券平均转股溢价率", ["日期", "平均转股溢价率（%）"], newest(payload.subnewBond, (row) => [excelDate(row.date), row.premiumMean]), { 1: "0.00" });
+  add("股债型拟合溢价率", ["日期", "偏股型（%）", "平衡型（%）", "偏债型（%）"], newest(payload.equityBondGroupValuation, (row) => [excelDate(row.date), row.stock, row.balance, row.bond]), { 1: "0.00", 2: "0.00", 3: "0.00" });
+  add("分评级拟合溢价率", ["日期", "AAA/AA+（%）", "AA/AA-（%）", "A+/A（%）"], newest(payload.ratingGroupValuation, (row) => [excelDate(row.date), row.top, row.middle, row.lower]), { 1: "0.00", 2: "0.00", 3: "0.00" });
+  add("分余额拟合溢价率", ["日期", "0-3（%）", "3-10（%）", "10-20（%）", "20-50（%）", "50+（%）"], newest(payload.balanceGroupValuation, (row) => [excelDate(row.date), row.group0_3, row.group3_10, row.group10_20, row.group20_50, row.group50_plus]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00" });
+  add("分正股市值拟合溢价率", ["日期", "0-50（%）", "50-300（%）", "300+（%）"], newest(payload.marketCapGroupValuation, (row) => [excelDate(row.date), row.group0_50, row.group50_300, row.group300_plus]), { 1: "0.00", 2: "0.00", 3: "0.00" });
+  add("分板块拟合溢价率", ["日期", "科技（%）", "金融（%）", "制造（%）", "消费（%）", "周期（%）"], newest(payload.sectorGroupValuation, (row) => [excelDate(row.date), row.technology, row.finance, row.manufacturing, row.consumption, row.cyclical]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00" });
+  add("收盘价分布", ["日期", "80以下（%）", "80-90（%）", "90-100（%）", "100-110（%）", "110-120（%）", "120-130（%）", "130-150（%）", "150以上（%）"], newest(payload.closePriceDistribution, (row) => [excelDate(row.date), row.le80, row.p80_90, row.p90_100, row.p100_110, row.p110_120, row.p120_130, row.p130_150, row.gt150]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00", 6: "0.00", 7: "0.00", 8: "0.00" });
+  add("博时ETF份额", ["日期", "ETF份额（亿份）"], newest(payload.etfShare, (row) => [excelDate(row.date), row.boshiShare]), { 1: "0.00" });
+  add("海富通ETF份额", ["日期", "ETF份额（亿份）"], newest(payload.etfShare, (row) => [excelDate(row.date), row.haifutongShare]), { 1: "0.00" });
+  const sectorMetricSpecs = [
+    ["各行业平均收盘价", "close", "收盘价"],
+    ["各行业平均平价", "parity", "平价"],
+    ["各行业平均转股溢价率", "conversionPremium", "转股溢价率（%）"],
+    ["各行业平均纯债溢价率", "bondPremium", "纯债溢价率（%）"],
+  ];
+  for (const [sheetName, key, label] of sectorMetricSpecs) {
+    add(sheetName, ["日期", `科技${label}`, `金融${label}`, `制造${label}`, `消费${label}`, `周期${label}`], newest(payload.sectorMeanMetrics, (row) => [excelDate(row.date), row[`${key}_technology`], row[`${key}_finance`], row[`${key}_manufacturing`], row[`${key}_consumption`], row[`${key}_cyclical`]]), { 1: "0.00", 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00" });
+  }
+  add("行业涨跌与估值", ["行业代码", "行业名称", "转债日涨跌幅", "转债周涨跌幅", "转债月涨跌幅", "转债年初至今涨跌幅", "正股日涨跌幅", "正股周涨跌幅", "正股月涨跌幅", "正股年初至今涨跌幅", "PE（TTM）", "PE三年分位数", "PE十年分位数", "PB（LF）", "PB三年分位数", "PB十年分位数"], payload.industryPerformance.map((row) => [row.code, row.name, row.bondDaily, row.bondWeekly, row.bondMonthly, row.bondYtd, row.stockDaily, row.stockWeekly, row.stockMonthly, row.stockYtd, row.pe, row.pe3y, row.pe10y, row.pb, row.pb3y, row.pb10y]), { 2: "0.00", 3: "0.00", 4: "0.00", 5: "0.00", 6: "0.00", 7: "0.00", 8: "0.00", 9: "0.00", 10: "0.00", 11: "0.00", 12: "0.00", 13: "0.00", 14: "0.00", 15: "0.00" }, {});
+  add("股债性分类均价", ["日期", "偏股型", "平衡型", "偏债型"], newest(payload.equityBondWeighted, (row) => [excelDate(row.date), row.stockPrice, row.balancePrice, row.bondPrice]), { 1: "0.00", 2: "0.00", 3: "0.00" });
+}
+
+
+function addIndustryHistorySheets() {
+  const specs = [
+    ["行业收盘价历史", "close"],
+    ["行业平价历史", "parity"],
+    ["行业转股溢价率历史", "conversionPremium"],
+    ["行业纯债溢价率历史", "bondPremium"],
+  ];
+  const industryOrder = payload.industryHistoryOrder || [];
+  const dates = Array.from(
+    new Set(payload.industryHistoryMetrics.map((row) => row.date))
+  ).sort((left, right) => left.localeCompare(right));
+  if (dates.length > 16383) {
+    throw new Error(`行业历史序列日期列数超过Excel上限：${dates.length}`);
+  }
+  for (const [sheetName, metricKey] of specs) {
+    const sheet = workbook.worksheets.add(sheetName);
+    const lookup = new Map(
+      payload.industryHistoryMetrics.map((row) => [
+        `${row.industry}||${row.date}`,
+        row[metricKey],
+      ])
+    );
+    const rows = industryOrder.map((industry) => [
+      industry,
+      ...dates.map((date) => lookup.get(`${industry}||${date}`) ?? null),
+    ]);
+    const columnCount = dates.length + 1;
+    sheet.showGridLines = false;
+    sheet.freezePanes.freezeColumns(1);
+    sheet.freezePanes.freezeRows(1);
+    sheet.getRangeByIndexes(0, 0, 1, columnCount).values = [["行业", ...dates]];
+    sheet.getRangeByIndexes(0, 0, 1, columnCount).format = {
+      font: { name: BODY_FONT, bold: true, color: "#000000", size: 10 },
+      horizontalAlignment: "center",
+      verticalAlignment: "center",
+      borders: { preset: "bottom", style: "thin", color: "#000000" },
+    };
+    sheet.getRangeByIndexes(0, 0, 1, columnCount).format.rowHeight = 20;
+    if (rows.length > 0) {
+      sheet.getRangeByIndexes(1, 0, rows.length, columnCount).values = rows;
+      sheet.getRangeByIndexes(1, 0, rows.length, columnCount).format = {
+        font: { name: BODY_FONT, color: "#000000", size: 10 },
+        verticalAlignment: "center",
+      };
+      if (dates.length > 0) {
+        sheet.getRangeByIndexes(1, 1, rows.length, dates.length).format.numberFormat = "0.00";
+      }
+    }
+    sheet.getRangeByIndexes(0, 0, rows.length + 1, 1).format.columnWidth = 16;
+    if (dates.length > 0) {
+      sheet.getRangeByIndexes(0, 1, rows.length + 1, dates.length).format.columnWidth = 12;
+    }
+  }
+}
+
+
+addRawChartSheets();
+addIndustryHistorySheets();
 
 const summary = await workbook.inspect({
   kind: "sheet,table",
@@ -1585,40 +2072,12 @@ const errors = await workbook.inspect({
 });
 console.log(errors.ndjson);
 
-const previewDir = previewDirArg || path.dirname(payloadPath);
-await fs.mkdir(previewDir, { recursive: true });
-for (const sheetName of ["两融余额", "主力净流入", "ETF份额与净申赎", "次新券表现", "指数成交额", "涨跌分布", "指数表现", "转债估值", "分类拟合溢价率", "板块与价格分布", "行业均值"]) {
-  const preview = await workbook.render({
-    sheetName,
-    range:
-      sheetName === "两融余额"
-        ? "A1:B18"
-        : sheetName === "主力净流入"
-          ? "A1:K18"
-        : sheetName === "ETF份额与净申赎"
-          ? "A1:K20"
-        : sheetName === "次新券表现"
-          ? "A1:H20"
-        : sheetName === "行业均值"
-          ? "A1:AA18"
-        : sheetName === "指数成交额"
-          ? "A1:E18"
-          : sheetName === "涨跌分布"
-            ? "A1:L20"
-            : sheetName === "指数表现"
-              ? "A1:O12"
-              : sheetName === "转债估值"
-                ? "A1:Y20"
-                : sheetName === "分类拟合溢价率"
-                  ? "T1:AU20"
-                  : "A1:W20",
-    scale: 1.5,
-    format: "png",
-  });
-  await fs.writeFile(
-    path.join(previewDir, `${sheetName}.png`),
-    new Uint8Array(await preview.arrayBuffer()),
-  );
+if (previewDirArg) {
+  await fs.mkdir(previewDirArg, { recursive: true });
+  for (const sheetName of ["指数表现", "成交额", "涨跌幅分布", "主力净流入", "两融余额", "百元拟合溢价率", "盘中百元平价拟合溢价率", "转债估值修复指数", "余额加权平价与收盘价中位数", "股债性分类转股溢价率", "分平价区间转股溢价率", "平价分类拟合溢价率", "分剩余期限拟合溢价率", "次新券平均转股溢价率", "股债型拟合溢价率", "分评级拟合溢价率", "分余额拟合溢价率", "分正股市值拟合溢价率", "分板块拟合溢价率", "收盘价分布", "博时ETF份额", "海富通ETF份额", "各行业平均收盘价", "各行业平均平价", "各行业平均转股溢价率", "各行业平均纯债溢价率", "行业涨跌与估值", "股债性分类均价", "行业收盘价历史", "行业平价历史", "行业转股溢价率历史", "行业纯债溢价率历史"]) {
+    const preview = await workbook.render({ sheetName, range: "A1:Z40", scale: 1.25, format: "png" });
+    await fs.writeFile(path.join(previewDirArg, `${sheetName}.png`), new Uint8Array(await preview.arrayBuffer()));
+  }
 }
 
 await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -1636,6 +2095,7 @@ CHART_DPI = 254
 CHART_PIXEL_WIDTH = 881
 CHART_PIXEL_HEIGHT = 547
 TABLE_PIXEL_HEIGHT = 480
+INDUSTRY_TABLE_PIXEL_HEIGHT = 1029
 CHART_FIGSIZE = (
     (CHART_PIXEL_WIDTH + 0.01) / CHART_DPI,
     (CHART_PIXEL_HEIGHT + 0.01) / CHART_DPI,
@@ -1653,6 +2113,32 @@ SECTION_BAR_HEIGHT = 36
 TITLE_FONT_SIZE = 8
 SINGLE_LINE_TITLE_BAND_HEIGHT = 0.07
 DOUBLE_LINE_TITLE_BAND_HEIGHT = 0.12
+SMALL_CHART_EXPORT_SPECS = (
+    (1, "成交额", "中证转债与沪深两市成交额.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (2, "涨跌幅分布", "可转债当日涨跌幅分布.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (3, "主力净流入", "沪深两市主力净流入.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (4, "两融余额", "沪深两市融资融券余额.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (5, "百元拟合溢价率", "百元拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (6, "盘中百元平价拟合溢价率", "盘中百元平价拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (7, "转债估值修复指数", "转债估值修复指数.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (8, "余额加权平价与收盘价中位数", "余额加权平价与收盘价中位数.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (9, "股债性分类转股溢价率", "股债性分类转股溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (10, "平价分类拟合溢价率", "分平价多因子修正拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (11, "分剩余期限拟合溢价率", "分剩余期限拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (12, "次新券平均转股溢价率", "次新券平均转股溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (13, "股债型拟合溢价率", "股债型拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (14, "分评级拟合溢价率", "分评级拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (15, "分余额拟合溢价率", "分余额拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (16, "分正股市值拟合溢价率", "分正股市值拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (17, "分板块拟合溢价率", "分板块拟合溢价率.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (18, "收盘价分布", "收盘价分布面积图.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (19, "博时ETF份额与净申赎", "博时可转债ETF份额与净申赎.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (20, "海富通ETF份额与净申赎", "海富通可转债ETF份额与净申赎.png", DOUBLE_LINE_TITLE_BAND_HEIGHT),
+    (21, "各行业平均收盘价", "各行业平均收盘价.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (22, "各行业平均平价", "各行业平均平价.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (23, "各行业平均转股溢价率", "各行业平均转股溢价率.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+    (24, "各行业平均纯债溢价率", "各行业平均纯债溢价率.png", SINGLE_LINE_TITLE_BAND_HEIGHT),
+)
 AXIS_FONT_SIZE = 6
 TICK_FONT_SIZE = 6
 LEGEND_FONT_SIZE = 6
@@ -1686,6 +2172,44 @@ STYLE_INDEX_SPECS = (
     ("399376.SZ", "小盘成长", "小盘成长"),
     ("399377.SZ", "小盘价值", "小盘价值"),
 )
+
+
+class ConsoleProgress:
+    """在终端同一行显示日报生成进度，不引入额外依赖。"""
+
+    def __init__(self, label: str = "转债日报", width: int = 28) -> None:
+        if not sys.stderr.isatty() and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        self.label = label
+        self.width = width
+        self.percent = 0
+        self._line_width = 0
+        self.update(0, "初始化")
+
+    def update(self, percent: int, message: str) -> None:
+        """更新进度和阶段说明；percent 自动限制在 0~100。"""
+        self.percent = max(0, min(100, int(percent)))
+        completed = round(self.width * self.percent / 100)
+        bar = "#" * completed + "-" * (self.width - completed)
+        line = f"\r{self.label} [{bar}] {self.percent:3d}% {message}"
+        line_width = sum(
+            2 if east_asian_width(character) in {"W", "F", "A"} else 1
+            for character in line
+        )
+        padding = " " * max(0, self._line_width - line_width)
+        sys.stderr.write(line + padding)
+        sys.stderr.flush()
+        self._line_width = line_width
+
+    def finish(self, message: str = "完成") -> None:
+        self.update(100, message)
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def fail(self) -> None:
+        self.update(self.percent, "失败")
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 def same_day_last_year(value: date) -> date:
@@ -1731,23 +2255,6 @@ def is_ths_login_ok(code: int) -> bool:
     return code in THS_LOGIN_OK_CODES
 
 
-def print_ifind_usage() -> None:
-    """显示iFinD各数据项的已用额度比例。"""
-    try:
-        result = THS_DataStatistics()
-        tables = result.get("tables", {}) if isinstance(result, dict) else {}
-        if not tables:
-            detail = result.get("errmsg", "未返回额度数据") if isinstance(result, dict) else str(result)
-            print(f"[警告] iFinD使用额度查询失败：{detail}")
-            return
-        print("iFinD使用额度：")
-        for key, value in tables.items():
-            ratio = value.get("ratio", "N/A") if isinstance(value, dict) else value
-            print(f"{key} 已用：{ratio}")
-    except Exception as exc:
-        print(f"[警告] iFinD使用额度查询失败：{exc}")
-
-
 def ths_login(
     ths_id: Optional[str] = None, ths_password: Optional[str] = None
 ) -> int:
@@ -1756,17 +2263,7 @@ def ths_login(
         file_id, file_password = load_ifind_credentials()
         ths_id = ths_id or file_id
         ths_password = ths_password or file_password
-    code = THS_iFinDLogin(ths_id, ths_password)
-    print(f"登录状态码: {code}")
-    if not is_ths_login_ok(code):
-        print(f"登录失败: {ths_login_errmsg(code)}")
-    elif code == -201:
-        print("登录成功！")
-    else:
-        print(ths_login_errmsg(code))
-    if is_ths_login_ok(code):
-        print_ifind_usage()
-    return code
+    return THS_iFinDLogin(ths_id, ths_password)
 
 
 def extract_data(result, api_name: str) -> pd.DataFrame:
@@ -1971,6 +2468,387 @@ def _sse_trade_calendar(start_date: date, end_date: date) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(dates)
 
 
+def _industry_period_context(run_date: date) -> dict[str, pd.Timestamp]:
+    """生成行业涨跌幅及估值分位数所需的交易日锚点。"""
+    calendar = _sse_trade_calendar(date(run_date.year - 10, 1, 1), run_date)
+    run_timestamp = pd.Timestamp(run_date)
+    if calendar[-1] != run_timestamp:
+        raise RuntimeError(
+            f"本地上交所交易日历未更新至 {run_date:%Y-%m-%d}，"
+            f"当前最新日期：{calendar[-1].date()}"
+        )
+
+    def last_before(target: pd.Timestamp, label: str) -> pd.Timestamp:
+        candidates = calendar[calendar < target]
+        if candidates.empty:
+            raise RuntimeError(f"无法确定{label}的前一交易日：{target.date()}")
+        return pd.Timestamp(candidates[-1])
+
+    def last_on_or_before(target: pd.Timestamp, label: str) -> pd.Timestamp:
+        candidates = calendar[calendar <= target]
+        if candidates.empty:
+            raise RuntimeError(f"无法确定{label}：{target.date()}")
+        return pd.Timestamp(candidates[-1])
+
+    week_start = run_timestamp - pd.Timedelta(days=7)
+    month_start = run_timestamp - pd.DateOffset(months=1)
+    year_start = pd.Timestamp(run_date.year, 1, 1)
+    three_year_target = run_timestamp - pd.DateOffset(years=3)
+    ten_year_target = run_timestamp - pd.DateOffset(years=10)
+    return {
+        "current": run_timestamp,
+        "dailyBase": last_before(run_timestamp, "日涨跌幅"),
+        "weeklyBase": last_before(week_start, "周涨跌幅起始日"),
+        "monthlyBase": last_before(month_start, "月涨跌幅起始日"),
+        "yearBase": last_before(year_start, "年初至今涨跌幅起始日"),
+        "threeYearStart": last_on_or_before(three_year_target, "三年前交易日"),
+        "tenYearStart": last_on_or_before(ten_year_target, "十年前交易日"),
+    }
+
+
+def fetch_cb_industry_performance(
+    run_date: date,
+    period_context: dict[str, pd.Timestamp],
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """从个券 Parquet 计算申万一级行业转债的四类涨跌幅。"""
+    if not CB_MASTER_PARQUET.is_file():
+        raise FileNotFoundError(f"未找到转债总表 Parquet：{CB_MASTER_PARQUET}")
+    master = pd.read_parquet(
+        CB_MASTER_PARQUET, columns=["转债代码", "申万行业"]
+    ).copy()
+    master["转债代码"] = master["转债代码"].astype(str).str.strip()
+    code_to_industry = (
+        master.drop_duplicates("转债代码", keep="last")
+        .set_index("转债代码")["申万行业"]
+        .astype(str)
+        .str.strip()
+    )
+
+    anchor_keys = ("current", "dailyBase", "weeklyBase", "monthlyBase", "yearBase")
+    anchor_dates = {pd.Timestamp(period_context[key]).normalize() for key in anchor_keys}
+    parquet_paths = sorted(
+        {
+            _month_parquet_path(timestamp.date())
+            for timestamp in anchor_dates
+        }
+    )
+    missing_paths = [path for path in parquet_paths if not path.is_file()]
+    if missing_paths:
+        raise FileNotFoundError(
+            "行业转债涨跌幅缺少月度 Parquet："
+            + "、".join(str(path) for path in missing_paths)
+        )
+
+    frames: list[pd.DataFrame] = []
+    required_columns = [
+        "转债代码",
+        "交易日期",
+        "交易状态",
+        "收盘价",
+        "转股溢价率",
+    ]
+    for parquet_path in parquet_paths:
+        frame = pd.read_parquet(parquet_path, columns=required_columns).copy()
+        frame["交易日期"] = pd.to_datetime(
+            frame["交易日期"], errors="coerce"
+        ).dt.normalize()
+        frame = frame.loc[frame["交易日期"].isin(anchor_dates)].copy()
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        raise RuntimeError("未从个券 Parquet 读取到行业转债涨跌幅锚点数据")
+
+    data = pd.concat(frames, ignore_index=True)
+    data["转债代码"] = data["转债代码"].astype(str).str.strip()
+    data["行业名称"] = data["转债代码"].map(code_to_industry)
+    data["收盘价"] = pd.to_numeric(data["收盘价"], errors="coerce")
+    data["转股溢价率"] = pd.to_numeric(data["转股溢价率"], errors="coerce")
+    data = data.loc[
+        data["交易状态"].astype(str).str.strip().eq("交易")
+        & data["行业名称"].notna()
+        & data["收盘价"].gt(0)
+    ].copy()
+    extreme_mask = data["收盘价"].gt(INDUSTRY_EXTREME_PRICE_THRESHOLD) & data[
+        "转股溢价率"
+    ].gt(INDUSTRY_EXTREME_PREMIUM_THRESHOLD)
+    data = data.loc[~extreme_mask]
+    grouped = data.groupby(["交易日期", "行业名称"], observed=True)["收盘价"].agg(
+        ["mean", "count"]
+    )
+
+    def level(industry: str, key: str) -> float | None:
+        lookup = (pd.Timestamp(period_context[key]).normalize(), industry)
+        if lookup not in grouped.index:
+            return None
+        value = grouped.loc[lookup, "mean"]
+        return None if pd.isna(value) else float(value)
+
+    def return_pct(current: float | None, base: float | None) -> float | None:
+        if current is None or base in (None, 0):
+            return None
+        return (current / base - 1.0) * 100.0
+
+    rows: list[dict[str, object]] = []
+    for code, industry in INDUSTRY_INDEX_SPECS:
+        current = level(industry, "current")
+        current_lookup = (period_context["current"], industry)
+        current_count = (
+            int(grouped.loc[current_lookup, "count"])
+            if current_lookup in grouped.index
+            else 0
+        )
+        rows.append(
+            {
+                "行业代码": code,
+                "行业名称": industry,
+                "转债日涨跌幅": return_pct(current, level(industry, "dailyBase")),
+                "转债周涨跌幅": return_pct(current, level(industry, "weeklyBase")),
+                "转债月涨跌幅": return_pct(current, level(industry, "monthlyBase")),
+                "转债年初至今涨跌幅": return_pct(
+                    current, level(industry, "yearBase")
+                ),
+                "转债当日样本数": current_count,
+            }
+        )
+
+    source: dict[str, object] = {
+        "parquetRoot": str(CB_PARQUET_ROOT.relative_to(WORKSPACE)),
+        "masterParquet": str(CB_MASTER_PARQUET.relative_to(WORKSPACE)),
+        "sampleRule": (
+            "交易状态=交易，收盘价>0；按总表申万一级行业取个券收盘价算术均值；"
+            f"剔除收盘价>{INDUSTRY_EXTREME_PRICE_THRESHOLD:g}且转股溢价率>"
+            f"{INDUSTRY_EXTREME_PREMIUM_THRESHOLD:g}%的极端样本"
+        ),
+        "returnRule": (
+            "行业转债涨跌幅=当日行业平均收盘价/对应基准日行业平均收盘价-1；"
+            "日、周、月、年初至今分别对应前一交易日、7个自然日前的前一交易日、"
+            "上月同日前的前一交易日、上一年最后交易日"
+        ),
+        "anchorDates": {
+            key: f"{pd.Timestamp(period_context[key]):%Y-%m-%d}"
+            for key in anchor_keys
+        },
+    }
+    return pd.DataFrame(rows), source
+
+
+def fetch_industry_index_performance_and_valuation(
+    run_date: date,
+    period_context: dict[str, pd.Timestamp],
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """通过 Wind Excel 标量公式取得行业指数涨跌幅、PE/PB及分位数。"""
+    run_text = f"{run_date:%Y%m%d}"
+    three_year_text = f"{period_context['threeYearStart']:%Y%m%d}"
+    ten_year_text = f"{period_context['tenYearStart']:%Y%m%d}"
+    formula_specs = (
+        ("正股日涨跌幅", "i_dq_pctchange", lambda code: f'=@i_dq_pctchange("{code}","{run_text}")'),
+        ("正股周涨跌幅", "s_wq_pctchange", lambda code: f'=@s_wq_pctchange("{code}","{run_text}")'),
+        ("正股月涨跌幅", "s_mq_pctchange", lambda code: f'=@s_mq_pctchange("{code}","{run_text}")'),
+        ("正股年初至今涨跌幅", "s_yq_pctchange", lambda code: f'=@s_yq_pctchange("{code}","{run_text}")'),
+        ("行业指数PE", "s_val_pe_ttm", lambda code: f'=@s_val_pe_ttm("{code}","{run_text}")'),
+        (
+            "PE三年分位数",
+            "i_val_pe_percentile",
+            lambda code: (
+                f'=@i_val_pe_percentile("{code}","{run_text}",'
+                f'"{three_year_text}","{run_text}")'
+            ),
+        ),
+        (
+            "PE十年分位数",
+            "i_val_pe_percentile",
+            lambda code: (
+                f'=@i_val_pe_percentile("{code}","{run_text}",'
+                f'"{ten_year_text}","{run_text}")'
+            ),
+        ),
+        ("行业指数PB", "s_val_pb_lf", lambda code: f'=@s_val_pb_lf("{code}","{run_text}")'),
+        (
+            "PB三年分位数",
+            "i_val_pb_percentile",
+            lambda code: (
+                f'=@i_val_pb_percentile("{code}","{run_text}",'
+                f'"{three_year_text}","{run_text}")'
+            ),
+        ),
+        (
+            "PB十年分位数",
+            "i_val_pb_percentile",
+            lambda code: (
+                f'=@i_val_pb_percentile("{code}","{run_text}",'
+                f'"{ten_year_text}","{run_text}")'
+            ),
+        ),
+    )
+    formula_matrix = [
+        [builder(code) for _, _, builder in formula_specs]
+        for code, _ in INDUSTRY_INDEX_SPECS
+    ]
+
+    pythoncom.CoInitialize()
+    excel = None
+    workbook = None
+    raw_values: tuple[tuple[object, ...], ...] | None = None
+    stable_signature: tuple[float, ...] | None = None
+    stable_rounds = 0
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        excel.AskToUpdateLinks = False
+        excel.ScreenUpdating = False
+        excel.EnableEvents = True
+        try:
+            excel.COMAddIns("WDF.Addin").Connect = True
+        except Exception:
+            pass
+
+        workbook = excel.Workbooks.Add()
+        sheet = workbook.Worksheets(1)
+        sheet.Name = "行业指数与估值"
+        sheet.Range("A1:L1").Value = (
+            (
+                "行业代码",
+                "行业名称",
+                *[label for label, _, _ in formula_specs],
+            ),
+        )
+        sheet.Range("A2:B31").Value = tuple(
+            (code, industry) for code, industry in INDUSTRY_INDEX_SPECS
+        )
+        try:
+            sheet.Range("C2:L31").Formula2 = tuple(
+                tuple(row) for row in formula_matrix
+            )
+        except Exception:
+            for row_index, formulas in enumerate(formula_matrix, start=2):
+                for column_index, formula in enumerate(formulas, start=3):
+                    try:
+                        sheet.Cells(row_index, column_index).Formula2 = formula
+                    except Exception:
+                        sheet.Cells(row_index, column_index).Formula = formula.replace(
+                            "=@", "="
+                        )
+        excel.CalculateFullRebuild()
+
+        started = time.monotonic()
+        while time.monotonic() - started < 120:
+            time.sleep(1)
+            try:
+                excel.CalculateUntilAsyncQueriesDone()
+            except Exception:
+                pass
+            candidate = sheet.Range("C2:L31").Value
+            if not isinstance(candidate, tuple) or len(candidate) != len(
+                INDUSTRY_INDEX_SPECS
+            ):
+                continue
+            numeric_values: list[float] = []
+            valid = True
+            for row in candidate:
+                if not isinstance(row, tuple) or len(row) != len(formula_specs):
+                    valid = False
+                    break
+                for value in row:
+                    try:
+                        number = float(value)
+                    except (TypeError, ValueError):
+                        valid = False
+                        break
+                    if not math.isfinite(number):
+                        valid = False
+                        break
+                    numeric_values.append(number)
+                if not valid:
+                    break
+            if not valid:
+                continue
+            signature = tuple(round(value, 10) for value in numeric_values)
+            if signature == stable_signature:
+                stable_rounds += 1
+            else:
+                stable_signature = signature
+                stable_rounds = 0
+            raw_values = candidate
+            if stable_rounds >= 2:
+                break
+        if raw_values is None or stable_rounds < 2:
+            preview = sheet.Range("A1:L5").Value
+            raise RuntimeError(
+                "Wind 行业指数涨跌幅及估值公式刷新超时，前5行状态："
+                f"{preview!r}"
+            )
+    finally:
+        if workbook is not None:
+            workbook.Close(SaveChanges=False)
+        if excel is not None:
+            excel.Quit()
+        pythoncom.CoUninitialize()
+
+    rows: list[dict[str, object]] = []
+    assert raw_values is not None
+    for (code, industry), values, formulas in zip(
+        INDUSTRY_INDEX_SPECS, raw_values, formula_matrix
+    ):
+        row: dict[str, object] = {"行业代码": code, "行业名称": industry}
+        for (label, _, _), value, formula in zip(formula_specs, values, formulas):
+            row[label] = float(value)
+            row[f"{label}公式"] = formula
+        rows.append(row)
+
+    source: dict[str, object] = {
+        "source": "Wind Excel 标量公式",
+        "returnFunctions": [
+            "i_dq_pctchange",
+            "s_wq_pctchange",
+            "s_mq_pctchange",
+            "s_yq_pctchange",
+        ],
+        "valuationFunctions": [
+            "s_val_pe_ttm",
+            "i_val_pe_percentile",
+            "s_val_pb_lf",
+            "i_val_pb_percentile",
+        ],
+        "runDate": f"{run_date:%Y-%m-%d}",
+        "threeYearStart": f"{period_context['threeYearStart']:%Y-%m-%d}",
+        "tenYearStart": f"{period_context['tenYearStart']:%Y-%m-%d}",
+        "returnUnit": "Wind函数直接返回百分数，例如2.05表示2.05%",
+        "mapping": [
+            {"code": code, "name": industry}
+            for code, industry in INDUSTRY_INDEX_SPECS
+        ],
+    }
+    return pd.DataFrame(rows), source
+
+
+def fetch_industry_market_table(
+    run_date: date,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """汇总行业正股指数、转债涨跌幅与正股估值。"""
+    period_context = _industry_period_context(run_date)
+    cb_data, cb_source = fetch_cb_industry_performance(run_date, period_context)
+    equity_data, equity_source = fetch_industry_index_performance_and_valuation(
+        run_date, period_context
+    )
+    result = equity_data.merge(
+        cb_data,
+        on=["行业代码", "行业名称"],
+        how="left",
+        validate="one_to_one",
+    )
+    result = result.sort_values(
+        "正股日涨跌幅", ascending=False, na_position="last"
+    ).reset_index(drop=True)
+    source: dict[str, object] = {
+        "runDate": f"{run_date:%Y-%m-%d}",
+        "sortRule": "按正股行业指数日涨跌幅降序",
+        "equity": equity_source,
+        "convertibleBond": cb_source,
+    }
+    return result, source
+
+
 def fetch_cb_etf_share_series(
     run_date: date,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
@@ -2138,14 +3016,21 @@ def fetch_cb_etf_share_series(
 
 
 def fetch_index_turnover(start: date, end: date) -> pd.DataFrame:
-    result = THS_DS(
-        "000001.SH,399001.SZ,000832.CSI",
-        "ths_trans_amt_index",
-        "",
-        "mode:thscode,block:history",
-        f"{start:%Y-%m-%d}",
-        f"{end:%Y-%m-%d}",
-    )
+    result = None
+    for attempt in range(INDEX_TURNOVER_REQUEST_ATTEMPTS):
+        result = THS_DS(
+            "000001.SH,399001.SZ,000832.CSI",
+            "ths_trans_amt_index",
+            "",
+            "mode:thscode,block:history",
+            f"{start:%Y-%m-%d}",
+            f"{end:%Y-%m-%d}",
+        )
+        if getattr(result, "errorcode", None) != -205:
+            break
+        if attempt + 1 < INDEX_TURNOVER_REQUEST_ATTEMPTS:
+            time.sleep(INDEX_TURNOVER_RETRY_DELAY_SECONDS)
+    assert result is not None
     data = extract_data(result, "THS_DS/ths_trans_amt_index")
     required = {"time", "000001.SH", "399001.SZ", "000832.CSI"}
     if not required.issubset(data.columns):
@@ -2366,6 +3251,78 @@ def fetch_daily_valuation_series(
     return wide, source
 
 
+def calculate_valuation_repair_index(data: pd.DataFrame) -> pd.DataFrame:
+    """计算百元溢价率 100 日走廊位置及中证转债指数后推收益。"""
+    required = {"交易日期", INVERSE_CUBIC_VALUATION_NAME, CB_INDEX_PARQUET_NAME}
+    if not required.issubset(data.columns):
+        raise RuntimeError(f"估值修复指数输入缺少字段：{sorted(required - set(data.columns))}")
+    result = data.loc[:, list(required)].copy()
+    result["交易日期"] = pd.to_datetime(result["交易日期"], errors="coerce").dt.normalize()
+    for column in (INVERSE_CUBIC_VALUATION_NAME, CB_INDEX_PARQUET_NAME):
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    result = (
+        result.dropna(subset=list(required))
+        .sort_values("交易日期")
+        .drop_duplicates("交易日期", keep="last")
+        .reset_index(drop=True)
+    )
+    if len(result) < VALUATION_REPAIR_WINDOW:
+        raise RuntimeError(
+            f"估值修复指数历史不足{VALUATION_REPAIR_WINDOW}个交易日"
+        )
+
+    valuation = result[INVERSE_CUBIC_VALUATION_NAME]
+    rolling_mean = valuation.rolling(VALUATION_REPAIR_WINDOW).mean()
+    rolling_std = valuation.rolling(VALUATION_REPAIR_WINDOW).std(ddof=0)
+    lower_corridor = rolling_mean - 2.0 * rolling_std
+    upper_corridor = rolling_mean + 2.0 * rolling_std
+    result[VALUATION_REPAIR_INDEX_NAME] = 100.0 * (
+        upper_corridor - valuation
+    ) / (upper_corridor - lower_corridor).replace(0, np.nan)
+
+    cb_index = result[CB_INDEX_PARQUET_NAME].to_numpy(dtype=float)
+    positions = np.arange(len(result))
+    forward_positions = np.minimum(
+        positions + VALUATION_REPAIR_FORWARD_TRADING_DAYS,
+        len(result) - 1,
+    )
+    result[VALUATION_REPAIR_FORWARD_RETURN_NAME] = (
+        cb_index[forward_positions] / cb_index - 1.0
+    ) * 100.0
+    return result
+
+
+def fetch_valuation_repair_index(run_date: date) -> pd.DataFrame:
+    """从指数 Parquet 读取百元拟合溢价率和中证转债指数计算修复指数。"""
+    if not INDEX_PARQUET.is_file():
+        raise FileNotFoundError(f"未找到指数 Parquet：{INDEX_PARQUET}")
+    data = pd.read_parquet(
+        INDEX_PARQUET, columns=["指数名称", "交易日期", "指数值"]
+    )
+    names = (INVERSE_CUBIC_VALUATION_NAME, CB_INDEX_PARQUET_NAME)
+    data = data.loc[
+        data["指数名称"].astype(str).isin(names),
+        ["指数名称", "交易日期", "指数值"],
+    ].copy()
+    data["交易日期"] = pd.to_datetime(data["交易日期"], errors="coerce").dt.normalize()
+    data["指数值"] = pd.to_numeric(data["指数值"], errors="coerce")
+    data = data.dropna(subset=["指数名称", "交易日期", "指数值"])
+    data = data.loc[data["交易日期"].le(pd.Timestamp(run_date))]
+    wide = (
+        data.drop_duplicates(["指数名称", "交易日期"], keep="last")
+        .pivot(index="交易日期", columns="指数名称", values="指数值")
+        .rename_axis(columns=None)
+        .reset_index()
+    )
+    result = calculate_valuation_repair_index(wide)
+    if result["交易日期"].iloc[-1].date() != run_date:
+        latest = result["交易日期"].iloc[-1]
+        raise RuntimeError(
+            f"估值修复指数未更新至 {run_date:%Y-%m-%d}，当前最新日期：{latest:%Y-%m-%d}"
+        )
+    return result
+
+
 def fetch_parity_group_valuation_series(
     run_date: date,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
@@ -2451,6 +3408,107 @@ def fetch_parity_group_valuation_series(
         "largestChangePctPoint": current_changes[largest_change_group],
     }
     return wide, source
+
+
+def aggregate_parity_interval_premium_series(data: pd.DataFrame) -> pd.DataFrame:
+    """按日度数据更新的七档平价口径计算余额加权转股溢价率。"""
+    required_columns = {"交易日期", "交易状态", "余额", "平价", "转股溢价率"}
+    if not required_columns.issubset(data.columns):
+        raise RuntimeError(
+            "分平价区间转股溢价率缺少字段："
+            f"{sorted(required_columns - set(data.columns))}"
+        )
+
+    base = data.loc[:, list(required_columns)].copy()
+    base["交易日期"] = pd.to_datetime(
+        base["交易日期"], errors="coerce"
+    ).dt.normalize()
+    for column in ("余额", "平价", "转股溢价率"):
+        base[column] = pd.to_numeric(base[column], errors="coerce")
+        base.loc[~np.isfinite(base[column]), column] = np.nan
+    base = base.loc[
+        base["交易日期"].notna()
+        & base["交易状态"].astype(str).str.strip().eq("交易")
+        & base[["余额", "平价", "转股溢价率"]].notna().all(axis=1)
+    ].copy()
+    if base.empty:
+        raise RuntimeError("分平价区间转股溢价率没有有效交易样本")
+
+    base["平价区间"] = pd.cut(
+        base["平价"],
+        bins=(-np.inf, 80.0, 90.0, 100.0, 110.0, 120.0, 130.0, np.inf),
+        labels=PARITY_INTERVAL_PREMIUM_ASCENDING_COLUMNS,
+        right=True,
+        include_lowest=True,
+    )
+    base["加权值"] = base["转股溢价率"] * base["余额"]
+    grouped = base.groupby(["交易日期", "平价区间"], observed=True).agg(
+        加权值=("加权值", "sum"),
+        有效余额=("余额", "sum"),
+    )
+    weighted = grouped["加权值"].div(grouped["有效余额"].replace(0, np.nan))
+    result = (
+        weighted.unstack("平价区间")
+        .reindex(columns=PARITY_INTERVAL_PREMIUM_COLUMNS)
+        .rename_axis(columns=None)
+        .reset_index()
+        .sort_values("交易日期")
+        .reset_index(drop=True)
+    )
+    return result
+
+
+def fetch_parity_interval_premium_series(
+    run_date: date,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """从月度个券 Parquet 计算2019年以来分平价区间转股溢价率。"""
+    end_month = f"{run_date:%Y%m}"
+    parquet_paths = sorted(
+        path
+        for path in CB_PARQUET_ROOT.glob("20*/20*.parquet")
+        if "201901" <= path.stem <= end_month
+    )
+    if not parquet_paths:
+        raise FileNotFoundError("未找到2019年以来的月度转债 Parquet")
+
+    columns = ["交易日期", "交易状态", "余额", "平价", "转股溢价率"]
+    frames: list[pd.DataFrame] = []
+    for parquet_path in parquet_paths:
+        frame = pd.read_parquet(parquet_path, columns=columns).copy()
+        frame["交易日期"] = pd.to_datetime(
+            frame["交易日期"], errors="coerce"
+        ).dt.normalize()
+        frame = frame.loc[
+            frame["交易日期"].between(
+                pd.Timestamp(VALUATION_START_DATE),
+                pd.Timestamp(run_date),
+                inclusive="both",
+            )
+        ]
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        raise RuntimeError("月度转债 Parquet 中没有分平价区间转股溢价率数据")
+
+    result = aggregate_parity_interval_premium_series(
+        pd.concat(frames, ignore_index=True)
+    )
+    latest_date = pd.Timestamp(result["交易日期"].iloc[-1]).date()
+    if latest_date != run_date:
+        raise RuntimeError(
+            f"分平价区间转股溢价率未更新至 {run_date:%Y-%m-%d}，"
+            f"当前最新日期：{latest_date:%Y-%m-%d}"
+        )
+    source: dict[str, object] = {
+        "parquetRoot": str(CB_PARQUET_ROOT.relative_to(WORKSPACE)),
+        "startDate": f"{result['交易日期'].min():%Y-%m-%d}",
+        "runDate": f"{run_date:%Y-%m-%d}",
+        "sampleRule": (
+            "交易状态=交易；按平价划分≤80、80-90、90-100、100-110、"
+            "110-120、120-130、>130七档；各档转股溢价率按余额加权"
+        ),
+    }
+    return result, source
 
 
 def fetch_equity_bond_group_valuation_series(
@@ -2801,10 +3859,234 @@ def fetch_sector_mean_metrics(
     return result, source
 
 
-def fetch_price_parity_series(
+def aggregate_industry_history_metrics(
+    panel: pd.DataFrame,
+    master: pd.DataFrame,
+    *,
+    start_date: pd.Timestamp,
+    run_date: pd.Timestamp,
+) -> pd.DataFrame:
+    """计算申万一级行业四项日度截面均值，并保留完整行业日期网格。"""
+    required_panel = {
+        "转债代码",
+        "交易日期",
+        "交易状态",
+        *INDUSTRY_HISTORY_METRICS,
+    }
+    required_master = {"转债代码", "上市日期", "最后交易日", "申万行业"}
+    if not required_panel.issubset(panel.columns):
+        raise RuntimeError(
+            "行业历史序列缺少个券字段："
+            f"{sorted(required_panel - set(panel.columns))}"
+        )
+    if not required_master.issubset(master.columns):
+        raise RuntimeError(
+            "行业历史序列缺少总表字段："
+            f"{sorted(required_master - set(master.columns))}"
+        )
+
+    history = panel.loc[:, list(required_panel)].copy()
+    security_master = master.loc[:, list(required_master)].copy()
+    history["转债代码"] = history["转债代码"].astype(str).str.strip()
+    security_master["转债代码"] = security_master["转债代码"].astype(str).str.strip()
+    history["交易日期"] = pd.to_datetime(
+        history["交易日期"], errors="coerce"
+    ).dt.normalize()
+    for column in INDUSTRY_HISTORY_METRICS:
+        history[column] = pd.to_numeric(history[column], errors="coerce")
+        history.loc[~np.isfinite(history[column]), column] = np.nan
+    for column in ("上市日期", "最后交易日"):
+        security_master[column] = pd.to_datetime(
+            security_master[column], errors="coerce"
+        ).dt.normalize()
+    security_master["申万行业"] = security_master["申万行业"].astype(str).str.strip()
+    security_master = security_master.drop_duplicates("转债代码", keep="last")
+
+    history = history.merge(
+        security_master,
+        on="转债代码",
+        how="left",
+        validate="many_to_one",
+    )
+    lifecycle_valid = (
+        (history["上市日期"].isna() | history["交易日期"].ge(history["上市日期"]))
+        & (
+            history["最后交易日"].isna()
+            | history["交易日期"].le(history["最后交易日"])
+        )
+    )
+    extreme = history["收盘价"].gt(INDUSTRY_EXTREME_PRICE_THRESHOLD) & history[
+        "转股溢价率"
+    ].gt(INDUSTRY_EXTREME_PREMIUM_THRESHOLD)
+    sample = history.loc[
+        history["交易日期"].between(start_date, run_date, inclusive="both")
+        & history["交易状态"].astype(str).str.strip().eq("交易")
+        & lifecycle_valid
+        & ~extreme
+        & history["收盘价"].notna()
+        & history["申万行业"].isin(INDUSTRY_HISTORY_ORDER),
+        ["交易日期", "申万行业", *INDUSTRY_HISTORY_METRICS],
+    ].copy()
+    if sample.empty:
+        raise RuntimeError("未计算出申万行业四项日度均值")
+
+    trading_dates = pd.DatetimeIndex(sorted(sample["交易日期"].dropna().unique()))
+    complete_index = pd.MultiIndex.from_product(
+        [INDUSTRY_HISTORY_ORDER, trading_dates], names=["行业", "日期"]
+    )
+    result = (
+        sample.groupby(["申万行业", "交易日期"], observed=True)[
+            list(INDUSTRY_HISTORY_METRICS)
+        ]
+        .mean()
+        .rename_axis(index=["行业", "日期"])
+        .reindex(complete_index)
+        .reset_index()
+    )
+    return result
+
+
+def fetch_industry_history_metrics(run_date: date) -> pd.DataFrame:
+    """读取2019年以来个券数据并计算30个申万行业的四项历史均值。"""
+    end_month = f"{run_date:%Y%m}"
+    parquet_paths = sorted(
+        path
+        for path in CB_PARQUET_ROOT.glob("20*/20*.parquet")
+        if "201901" <= path.stem <= end_month
+    )
+    if not parquet_paths:
+        raise FileNotFoundError("未找到2019年以来的月度转债 Parquet")
+    if not CB_MASTER_PARQUET.is_file():
+        raise FileNotFoundError(f"未找到转债总表 Parquet：{CB_MASTER_PARQUET}")
+
+    panel = pd.concat(
+        [
+            pd.read_parquet(
+                parquet_path,
+                columns=[
+                    "转债代码",
+                    "交易日期",
+                    "交易状态",
+                    *INDUSTRY_HISTORY_METRICS,
+                ],
+            )
+            for parquet_path in parquet_paths
+        ],
+        ignore_index=True,
+    )
+    master = pd.read_parquet(
+        CB_MASTER_PARQUET,
+        columns=["转债代码", "上市日期", "最后交易日", "申万行业"],
+    )
+    result = aggregate_industry_history_metrics(
+        panel,
+        master,
+        start_date=pd.Timestamp(VALUATION_START_DATE),
+        run_date=pd.Timestamp(run_date),
+    )
+    latest = result.loc[result[list(INDUSTRY_HISTORY_METRICS)].notna().any(axis=1), "日期"].max()
+    if pd.isna(latest) or pd.Timestamp(latest).date() != run_date:
+        raise RuntimeError(
+            f"行业四项历史均值未更新至 {run_date:%Y-%m-%d}，当前最新日期：{latest}"
+        )
+    return result
+
+
+def aggregate_equity_bond_weighted_series(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """按平价底价溢价率分三类，计算余额加权转股溢价率与收盘价。"""
+    required_columns = {
+        "交易日期",
+        "交易状态",
+        "余额",
+        "平价底价溢价率",
+        "转股溢价率",
+        "收盘价",
+    }
+    if not required_columns.issubset(data.columns):
+        raise RuntimeError(
+            "股债性分类余额加权数据缺少字段："
+            f"{sorted(required_columns - set(data.columns))}"
+        )
+
+    base = data.loc[:, list(required_columns)].copy()
+    base["交易日期"] = pd.to_datetime(base["交易日期"], errors="coerce").dt.normalize()
+    for column in ("余额", "平价底价溢价率", "转股溢价率", "收盘价"):
+        base[column] = pd.to_numeric(base[column], errors="coerce")
+        base.loc[~np.isfinite(base[column]), column] = np.nan
+    base = base.loc[
+        base["交易日期"].notna()
+        & base["交易状态"].astype(str).str.strip().eq("交易")
+        & base["余额"].gt(0)
+        & base["平价底价溢价率"].notna()
+    ].copy()
+    base["股债性分类"] = np.select(
+        (
+            base["平价底价溢价率"].gt(20),
+            base["平价底价溢价率"].gt(-20)
+            & base["平价底价溢价率"].lt(20),
+            base["平价底价溢价率"].lt(-20),
+        ),
+        EQUITY_BOND_TYPE_GROUPS,
+        default="",
+    )
+    base = base.loc[base["股债性分类"].isin(EQUITY_BOND_TYPE_GROUPS)].copy()
+    if base.empty:
+        raise RuntimeError("股债性分类余额加权序列无有效交易样本")
+
+    result = pd.DataFrame({"交易日期": sorted(base["交易日期"].unique())})
+    for metric in ("转股溢价率", "收盘价"):
+        weighted = base.dropna(subset=[metric]).copy()
+        weighted["加权值"] = weighted[metric] * weighted["余额"]
+        grouped = weighted.groupby(["交易日期", "股债性分类"], observed=True).agg(
+            加权值=("加权值", "sum"),
+            有效余额=("余额", "sum"),
+        )
+        average = (grouped["加权值"] / grouped["有效余额"]).unstack("股债性分类")
+        average = average.reindex(columns=EQUITY_BOND_TYPE_GROUPS)
+        average = average.rename(
+            columns={group: f"{group}_{metric}" for group in EQUITY_BOND_TYPE_GROUPS}
+        ).reset_index()
+        result = result.merge(average, on="交易日期", how="left")
+
+    source: dict[str, object] = {
+        "sampleRule": (
+            "交易状态=交易、余额>0；按平价底价溢价率划分偏股型>20、"
+            "平衡型(-20,20)、偏债型<-20；各组按余额加权"
+        )
+    }
+    for metric, source_key in (("转股溢价率", "premium"), ("收盘价", "price")):
+        metric_details: dict[str, dict[str, object]] = {}
+        for group in EQUITY_BOND_TYPE_GROUPS:
+            column = f"{group}_{metric}"
+            series = result.loc[:, ["交易日期", column]].dropna().sort_values("交易日期")
+            if len(series) < 2:
+                raise RuntimeError(f"{group}余额加权{metric}有效历史记录不足2条")
+            latest = series.iloc[-1]
+            previous = series.iloc[-2]
+            latest_value = float(latest[column])
+            previous_value = float(previous[column])
+            metric_details[group] = {
+                "latestDate": f"{latest['交易日期']:%Y-%m-%d}",
+                "latestValue": latest_value,
+                "previousDate": f"{previous['交易日期']:%Y-%m-%d}",
+                "previousValue": previous_value,
+                "dailyChangePctPoint": latest_value - previous_value,
+                "dailyChangePct": (
+                    (latest_value / previous_value - 1.0) * 100
+                    if previous_value != 0
+                    else np.nan
+                ),
+            }
+        source[source_key] = metric_details
+    return result.sort_values("交易日期").reset_index(drop=True), source
+
+
+def fetch_equity_bond_weighted_series(
     run_date: date,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """从月度个券 Parquet 聚合余额加权平价与收盘价中位数。"""
+    """从月度个券 Parquet 读取股债性分类余额加权序列。"""
     end_month = f"{run_date:%Y%m}"
     parquet_paths = sorted(
         path
@@ -2814,7 +4096,165 @@ def fetch_price_parity_series(
     if not parquet_paths:
         raise FileNotFoundError("未找到2019年以来的月度转债 Parquet")
 
-    daily_frames: list[pd.DataFrame] = []
+    columns = [
+        "交易日期",
+        "交易状态",
+        "余额",
+        "平价底价溢价率",
+        "转股溢价率",
+        "收盘价",
+    ]
+    frames: list[pd.DataFrame] = []
+    for parquet_path in parquet_paths:
+        frame = pd.read_parquet(parquet_path, columns=columns)
+        frame["交易日期"] = pd.to_datetime(frame["交易日期"], errors="coerce").dt.normalize()
+        frame = frame.loc[frame["交易日期"].le(pd.Timestamp(run_date))].copy()
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        raise RuntimeError("月度转债 Parquet 中没有股债性分类数据")
+
+    result, source = aggregate_equity_bond_weighted_series(
+        pd.concat(frames, ignore_index=True)
+    )
+    if pd.Timestamp(result["交易日期"].iloc[-1]).date() != run_date:
+        latest = pd.Timestamp(result["交易日期"].iloc[-1]).date()
+        raise RuntimeError(
+            f"股债性分类余额加权序列未更新至 {run_date:%Y-%m-%d}，当前最新日期：{latest}"
+        )
+    for metric_key in ("premium", "price"):
+        for group, details in source[metric_key].items():
+            if details["latestDate"] != f"{run_date:%Y-%m-%d}":
+                raise RuntimeError(
+                    f"{group}余额加权{metric_key}未更新至 {run_date:%Y-%m-%d}，"
+                    f"当前最新日期：{details['latestDate']}"
+                )
+    source.update(
+        {
+            "parquetRoot": str(CB_PARQUET_ROOT.relative_to(WORKSPACE)),
+            "startDate": f"{result['交易日期'].min():%Y-%m-%d}",
+            "runDate": f"{run_date:%Y-%m-%d}",
+        }
+    )
+    return result, source
+
+
+def build_equity_bond_weighted_titles(source: dict[str, object]) -> dict[str, str]:
+    """生成股债性余额加权转股溢价率与均价标题。"""
+    premium = source["premium"]
+    price = source["price"]
+    return {
+        "premium": (
+            "股债性分类转股溢价率：\n"
+            f"偏股型{float(premium['偏股型']['latestValue']):.2f}%，"
+            f"{float(premium['偏股型']['dailyChangePctPoint']):+.2f}pct；"
+            f"偏债型{float(premium['偏债型']['latestValue']):.2f}%，"
+            f"{float(premium['偏债型']['dailyChangePctPoint']):+.2f}pct"
+        ),
+        "price": (
+            "股债性分类均价：\n"
+            f"偏股型{float(price['偏股型']['latestValue']):.2f}，"
+            f"{float(price['偏股型']['dailyChangePct']):+.2f}%；"
+            f"偏债型{float(price['偏债型']['latestValue']):.2f}，"
+            f"{float(price['偏债型']['dailyChangePct']):+.2f}%"
+        ),
+    }
+
+
+def aggregate_price_parity_series(data: pd.DataFrame) -> pd.DataFrame:
+    """按交易日聚合余额加权平价、余额加权收盘价与收盘价中位数。"""
+    required = {"交易日期", "交易状态", "余额", "平价", "收盘价"}
+    if not required.issubset(data.columns):
+        raise RuntimeError(
+            f"价格与平价聚合输入缺少字段：{sorted(required - set(data.columns))}"
+        )
+
+    frame = data[list(required)].copy()
+    frame["交易日期"] = pd.to_datetime(
+        frame["交易日期"], errors="coerce"
+    ).dt.normalize()
+    frame = frame.loc[
+        frame["交易日期"].notna()
+        & frame["交易状态"].astype(str).str.strip().eq("交易")
+    ].copy()
+    for column in ("余额", "平价", "收盘价"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "交易日期",
+                "余额加权平价",
+                "余额加权收盘价",
+                "平价样本数",
+                "价格样本数",
+                "有效余额",
+                "收盘价中位数",
+            ]
+        )
+
+    weighted = frame.loc[frame["余额"].gt(0)].copy()
+    parity_weighted = weighted.dropna(subset=["平价"]).copy()
+    parity_weighted["平价乘余额"] = (
+        parity_weighted["平价"] * parity_weighted["余额"]
+    )
+    parity_daily = parity_weighted.groupby("交易日期", as_index=False).agg(
+        平价乘余额=("平价乘余额", "sum"),
+        有效余额=("余额", "sum"),
+        平价样本数=("平价", "size"),
+    )
+    parity_daily["余额加权平价"] = parity_daily["平价乘余额"].div(
+        parity_daily["有效余额"].replace(0, np.nan)
+    )
+    price_weighted = weighted.dropna(subset=["收盘价"]).copy()
+    price_weighted["收盘价乘余额"] = (
+        price_weighted["收盘价"] * price_weighted["余额"]
+    )
+    price_daily = price_weighted.groupby("交易日期", as_index=False).agg(
+        收盘价乘余额=("收盘价乘余额", "sum"),
+        价格有效余额=("余额", "sum"),
+    )
+    price_daily["余额加权收盘价"] = price_daily["收盘价乘余额"].div(
+        price_daily["价格有效余额"].replace(0, np.nan)
+    )
+    median_daily = (
+        frame.dropna(subset=["收盘价"])
+        .groupby("交易日期", as_index=False)
+        .agg(收盘价中位数=("收盘价", "median"), 价格样本数=("收盘价", "size"))
+    )
+    return (
+        parity_daily[
+            [
+                "交易日期",
+                "余额加权平价",
+                "平价样本数",
+                "有效余额",
+            ]
+        ]
+        .merge(
+            price_daily[["交易日期", "余额加权收盘价"]],
+            on="交易日期",
+            how="outer",
+        )
+        .merge(median_daily, on="交易日期", how="outer")
+        .sort_values("交易日期")
+        .reset_index(drop=True)
+    )
+
+
+def fetch_price_parity_series(
+    run_date: date,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    """从月度个券 Parquet 聚合余额加权平价、收盘价与价格中位数。"""
+    end_month = f"{run_date:%Y%m}"
+    parquet_paths = sorted(
+        path
+        for path in CB_PARQUET_ROOT.glob("20*/20*.parquet")
+        if "201901" <= path.stem <= end_month
+    )
+    if not parquet_paths:
+        raise FileNotFoundError("未找到2019年以来的月度转债 Parquet")
+
+    raw_frames: list[pd.DataFrame] = []
     required = {"交易日期", "交易状态", "余额", "平价", "收盘价"}
     for parquet_path in parquet_paths:
         frame = pd.read_parquet(parquet_path, columns=list(required))
@@ -2832,41 +4272,16 @@ def fetch_price_parity_series(
         ].copy()
         if frame.empty:
             continue
-        for column in ("余额", "平价", "收盘价"):
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+        raw_frames.append(frame)
 
-        weighted = frame.dropna(subset=["余额", "平价"]).loc[
-            lambda x: x["余额"].gt(0)
-        ].copy()
-        weighted["平价乘余额"] = weighted["平价"] * weighted["余额"]
-        weighted_daily = weighted.groupby("交易日期", as_index=False).agg(
-            平价乘余额=("平价乘余额", "sum"),
-            有效余额=("余额", "sum"),
-            平价样本数=("平价", "size"),
-        )
-        weighted_daily["余额加权平价"] = (
-            weighted_daily["平价乘余额"] / weighted_daily["有效余额"]
-        )
-        median_daily = (
-            frame.dropna(subset=["收盘价"])
-            .groupby("交易日期", as_index=False)
-            .agg(收盘价中位数=("收盘价", "median"), 价格样本数=("收盘价", "size"))
-        )
-        daily_frames.append(
-            weighted_daily[
-                ["交易日期", "余额加权平价", "平价样本数", "有效余额"]
-            ].merge(median_daily, on="交易日期", how="outer")
-        )
-
-    if not daily_frames:
+    if not raw_frames:
         raise RuntimeError("月度转债 Parquet 中未聚合出有效价格与平价序列")
-    result = (
-        pd.concat(daily_frames, ignore_index=True)
-        .sort_values("交易日期")
-        .drop_duplicates("交易日期", keep="last")
-        .dropna(subset=["余额加权平价", "收盘价中位数"])
-        .reset_index(drop=True)
+    result = aggregate_price_parity_series(
+        pd.concat(raw_frames, ignore_index=True)
     )
+    result = result.dropna(
+        subset=["余额加权平价", "余额加权收盘价", "收盘价中位数"]
+    ).reset_index(drop=True)
     if len(result) < 2 or result["交易日期"].iloc[-1].date() != run_date:
         latest = result["交易日期"].max() if not result.empty else pd.NaT
         raise RuntimeError(
@@ -2881,6 +4296,11 @@ def fetch_price_parity_series(
     median_change = (
         float(latest["收盘价中位数"]) / float(previous["收盘价中位数"]) - 1
     ) * 100
+    weighted_close_change = (
+        float(latest["余额加权收盘价"])
+        / float(previous["余额加权收盘价"])
+        - 1
+    ) * 100
     median_percentile = float(
         result["收盘价中位数"].le(float(latest["收盘价中位数"])).mean() * 100
     )
@@ -2891,10 +4311,15 @@ def fetch_price_parity_series(
         "previousDate": f"{previous['交易日期']:%Y-%m-%d}",
         "latestParity": float(latest["余额加权平价"]),
         "parityDailyChangePct": parity_change,
+        "latestWeightedClose": float(latest["余额加权收盘价"]),
+        "weightedCloseDailyChangePct": weighted_close_change,
         "latestMedianPrice": float(latest["收盘价中位数"]),
         "medianPriceDailyChangePct": median_change,
         "medianPricePercentileSince2019": median_percentile,
-        "sampleRule": "交易状态=交易；平价按有效余额加权，收盘价取有效样本截面中位数",
+        "sampleRule": (
+            "交易状态=交易；平价与整体收盘价按有效余额加权，"
+            "价格中位数取有效收盘价样本截面中位数"
+        ),
     }
     return result, source
 
@@ -3362,27 +4787,25 @@ def add_chart_panel_title(
     band_bottom = 1.0 - band_height
     fig.add_artist(
         plt.Rectangle(
-            (0, 0),
-            1,
-            1,
-            transform=fig.transFigure,
-            facecolor="none",
-            edgecolor="black",
-            linewidth=0.65,
-            zorder=20,
-            clip_on=False,
-        )
-    )
-    fig.add_artist(
-        plt.Rectangle(
             (0, band_bottom),
             1,
             band_height,
             transform=fig.transFigure,
             facecolor="#D9E2F3",
-            edgecolor="black",
-            linewidth=0.65,
+            edgecolor="none",
+            linewidth=0,
             zorder=19,
+            clip_on=False,
+        )
+    )
+    fig.add_artist(
+        plt.Line2D(
+            (0.002, 0.998),
+            (band_bottom, band_bottom),
+            transform=fig.transFigure,
+            color="#7F7F7F",
+            linewidth=0.5,
+            zorder=20,
             clip_on=False,
         )
     )
@@ -3400,6 +4823,38 @@ def add_chart_panel_title(
     )
 
 
+def prepare_margin_balance_plot(
+    data: pd.DataFrame,
+) -> tuple[pd.DataFrame, str]:
+    """剔除相对上一个正常点跳变超过 10% 的未完整更新数据。"""
+    balance_column = "沪深两市融资融券余额_亿元"
+    valid = (
+        data.dropna(subset=["交易日期", balance_column])
+        .sort_values("交易日期")
+        .copy()
+    )
+    accepted_positions: list[int] = []
+    previous_balance: float | None = None
+    for position, raw_balance in enumerate(valid[balance_column]):
+        balance = float(raw_balance)
+        if previous_balance is None:
+            accepted_positions.append(position)
+            previous_balance = balance
+            continue
+        if previous_balance == 0:
+            relative_change = 0.0 if balance == 0 else math.inf
+        else:
+            relative_change = abs(balance / previous_balance - 1.0)
+        if relative_change <= MARGIN_BALANCE_MAX_DAILY_CHANGE_RATIO + 1e-12:
+            accepted_positions.append(position)
+            previous_balance = balance
+
+    plot_data = valid.iloc[accepted_positions].reset_index(drop=True)
+    if plot_data.empty:
+        raise RuntimeError("两融余额无有效绘图数据")
+    return plot_data, "沪深两市融资融券余额"
+
+
 def plot_market_statistics(
     data: pd.DataFrame, output_path: Path, font: fm.FontProperties
 ) -> None:
@@ -3408,43 +4863,24 @@ def plot_market_statistics(
         raise FileNotFoundError(f"未找到华文楷体字体：{CHART_FONT_PATH}")
     fm.fontManager.addfont(str(CHART_FONT_PATH))
     chart_font = fm.FontProperties(fname=str(CHART_FONT_PATH), size=7)
+    plot_data, panel_title = prepare_margin_balance_plot(data)
 
     fig, ax = plt.subplots(figsize=CHART_FIGSIZE, dpi=CHART_DPI)
     ax.plot(
-        data["交易日期"],
-        data["沪深两市融资融券余额_亿元"],
+        plot_data["交易日期"],
+        plot_data["沪深两市融资融券余额_亿元"],
         color=RED,
         linewidth=1.0,
         marker=None,
         label="沪深两市融资融券余额（亿元）",
     )
-    valid_balances = (
-        data.dropna(subset=["沪深两市融资融券余额_亿元"])
-        .sort_values("交易日期")
-        .reset_index(drop=True)
-    )
-    latest = valid_balances.iloc[-1]
-    if len(valid_balances) >= 2:
-        previous = valid_balances.iloc[-2]
-        balance_change = float(
-            latest["沪深两市融资融券余额_亿元"]
-            - previous["沪深两市融资融券余额_亿元"]
-        )
-        panel_title = (
-            f"两融余额:{float(latest['沪深两市融资融券余额_亿元']):.2f}亿元，"
-            f"环比{balance_change:+.2f}亿元"
-        )
-    else:
-        panel_title = (
-            f"两融余额:{float(latest['沪深两市融资融券余额_亿元']):.2f}亿元"
-        )
     add_chart_panel_title(
         fig,
         panel_title,
     )
 
-    ax.set_xlim(data["交易日期"].min(), data["交易日期"].max())
-    value_max = float(data["沪深两市融资融券余额_亿元"].max())
+    ax.set_xlim(plot_data["交易日期"].min(), plot_data["交易日期"].max())
+    value_max = float(plot_data["沪深两市融资融券余额_亿元"].max())
     y_step = 5000.0
     ax.set_ylim(0, max(y_step, math.ceil(value_max / y_step) * y_step))
     ax.yaxis.set_major_locator(mticker.MultipleLocator(y_step))
@@ -3453,7 +4889,7 @@ def plot_market_statistics(
         mdates.MonthLocator(bymonth=(1, 3, 5, 7, 9, 11), bymonthday=2)
     )
     ax.xaxis.set_major_formatter(
-        mdates.DateFormatter(date_axis_format_for_span(data["交易日期"]))
+        mdates.DateFormatter(date_axis_format_for_span(plot_data["交易日期"]))
     )
     ax.tick_params(
         axis="both",
@@ -3926,7 +5362,7 @@ def plot_daily_valuation(
         color=RED,
         linewidth=1.0,
         marker=None,
-        label="百元拟合溢价率（三次反比例）",
+        label="百元拟合溢价率",
         zorder=5,
     )
     line_multifactor, = ax.plot(
@@ -3992,7 +5428,7 @@ def plot_daily_valuation(
 
     legend = ax.legend(
         [line_inverse, line_multifactor, *quantile_lines],
-        ["百元拟合溢价率（三次反比例）", "多因子修正百元拟合溢价率", "25%", "50%", "75%"],
+        ["百元拟合溢价率", "多因子修正百元拟合溢价率", "25%", "50%", "75%"],
         loc="upper center",
         bbox_to_anchor=(0.5, -0.36),
         frameon=False,
@@ -4256,10 +5692,329 @@ def plot_subnew_bond_metric(
     plt.close(fig)
 
 
+def _set_weighted_metric_axis_scale(ax, values: pd.Series) -> None:
+    """为余额加权指标设置紧凑且不留过多空白的纵轴范围。"""
+    valid = pd.to_numeric(values, errors="coerce").dropna()
+    if valid.empty:
+        raise RuntimeError("余额加权指标没有可绘制的有效数值")
+    lower = float(valid.min())
+    upper = float(valid.max())
+    padding = max(0.5, (upper - lower) * 0.1)
+    ax.set_ylim(lower - padding, upper + padding)
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=6, min_n_ticks=4))
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
+
+
+def plot_equity_bond_weighted_premium(
+    data: pd.DataFrame,
+    source: dict[str, object],
+    output_path: Path,
+) -> None:
+    """绘制股债性分类余额加权转股溢价率，偏债型使用右轴。"""
+    chart_font = _valuation_chart_font()
+    fig, ax = plt.subplots(figsize=CHART_FIGSIZE, dpi=CHART_DPI)
+    right_ax = ax.twinx()
+    stock_line, = ax.plot(
+        data["交易日期"],
+        data["偏股型_转股溢价率"],
+        color=RED,
+        linewidth=1.0,
+        label="偏股型",
+        zorder=4,
+    )
+    balanced_line, = ax.plot(
+        data["交易日期"],
+        data["平衡型_转股溢价率"],
+        color="#A6A6A6",
+        linewidth=1.0,
+        label="平衡型",
+        zorder=4,
+    )
+    bond_line, = right_ax.plot(
+        data["交易日期"],
+        data["偏债型_转股溢价率"],
+        color=BLUE,
+        linewidth=1.0,
+        label="偏债型",
+        zorder=4,
+    )
+    add_chart_panel_title(
+        fig,
+        build_equity_bond_weighted_titles(source)["premium"],
+    )
+
+    _set_weighted_metric_axis_scale(
+        ax,
+        pd.concat(
+            [data["偏股型_转股溢价率"], data["平衡型_转股溢价率"]]
+        ),
+    )
+    _set_weighted_metric_axis_scale(right_ax, data["偏债型_转股溢价率"])
+    ax.set_xlim(data["交易日期"].min(), data["交易日期"].max())
+    tick_dates = [pd.Timestamp(data["交易日期"].min())]
+    tick_dates.extend(
+        pd.Timestamp(year=year, month=1, day=1)
+        for year in range(tick_dates[0].year + 1, data["交易日期"].max().year + 1)
+    )
+    ax.set_xticks(tick_dates)
+    ax.xaxis.set_major_formatter(
+        mdates.DateFormatter(date_axis_format_for_span(data["交易日期"]))
+    )
+    _style_valuation_axis(ax, chart_font)
+    right_ax.tick_params(
+        axis="y",
+        which="major",
+        colors="black",
+        labelsize=7,
+        width=0.6,
+        length=3,
+        right=True,
+        labelright=True,
+    )
+    for label in right_ax.get_yticklabels():
+        label.set_fontproperties(chart_font)
+        label.set_fontsize(7)
+    right_ax.spines["right"].set_color("black")
+    right_ax.spines["right"].set_linewidth(0.7)
+    right_ax.spines["top"].set_visible(False)
+    right_ax.spines["left"].set_visible(False)
+    right_ax.tick_params(axis="x", bottom=False, labelbottom=False)
+    right_ax.set_ylabel("")
+    for label in ax.get_xticklabels():
+        label.set_rotation(90)
+        label.set_horizontalalignment("center")
+
+    legend = ax.legend(
+        [stock_line, balanced_line, bond_line],
+        ["偏股型", "平衡型", "偏债型"],
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.35),
+        frameon=False,
+        prop=chart_font,
+        fontsize=7,
+        ncol=3,
+        handlelength=2.5,
+        handletextpad=0.5,
+        columnspacing=1.2,
+        borderaxespad=0,
+    )
+    for legend_text in legend.get_texts():
+        legend_text.set_fontproperties(chart_font)
+        legend_text.set_fontsize(7)
+    fig.subplots_adjust(left=0.13, right=0.88, top=0.84, bottom=0.32)
+    fig.savefig(output_path, dpi=CHART_DPI, facecolor="white")
+    plt.close(fig)
+
+
+def plot_equity_bond_weighted_price(
+    data: pd.DataFrame,
+    source: dict[str, object],
+    output_path: Path,
+) -> None:
+    """绘制股债性分类余额加权收盘价。"""
+    chart_font = _valuation_chart_font()
+    fig, ax = plt.subplots(figsize=CHART_FIGSIZE, dpi=CHART_DPI)
+    lines = []
+    for group, color in zip(EQUITY_BOND_TYPE_GROUPS, (RED, "#A6A6A6", BLUE)):
+        line, = ax.plot(
+            data["交易日期"],
+            data[f"{group}_收盘价"],
+            color=color,
+            linewidth=1.0,
+            label=group,
+            zorder=4,
+        )
+        lines.append(line)
+    add_chart_panel_title(fig, build_equity_bond_weighted_titles(source)["price"])
+    _set_weighted_metric_axis_scale(
+        ax,
+        pd.concat([data[f"{group}_收盘价"] for group in EQUITY_BOND_TYPE_GROUPS]),
+    )
+    ax.set_xlim(data["交易日期"].min(), data["交易日期"].max())
+    tick_dates = [pd.Timestamp(data["交易日期"].min())]
+    tick_dates.extend(
+        pd.Timestamp(year=year, month=1, day=1)
+        for year in range(tick_dates[0].year + 1, data["交易日期"].max().year + 1)
+    )
+    ax.set_xticks(tick_dates)
+    ax.xaxis.set_major_formatter(
+        mdates.DateFormatter(date_axis_format_for_span(data["交易日期"]))
+    )
+    _style_valuation_axis(ax, chart_font)
+    for label in ax.get_xticklabels():
+        label.set_rotation(90)
+        label.set_horizontalalignment("center")
+    legend = ax.legend(
+        lines,
+        [line.get_label() for line in lines],
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.35),
+        frameon=False,
+        prop=chart_font,
+        fontsize=7,
+        ncol=3,
+        handlelength=2.5,
+        handletextpad=0.5,
+        columnspacing=1.2,
+        borderaxespad=0,
+    )
+    for legend_text in legend.get_texts():
+        legend_text.set_fontproperties(chart_font)
+        legend_text.set_fontsize(7)
+    fig.subplots_adjust(left=0.13, right=0.965, top=0.84, bottom=0.32)
+    fig.savefig(output_path, dpi=CHART_DPI, facecolor="white")
+    plt.close(fig)
+
+
+def plot_valuation_repair_index(data: pd.DataFrame, output_path: Path) -> None:
+    """绘制估值修复指数及中证转债指数后推70日涨跌幅。"""
+    plot_data = data.dropna(subset=["交易日期"]).sort_values("交易日期").copy()
+    plot_data = plot_data.loc[
+        plot_data["交易日期"].ge(pd.Timestamp(VALUATION_REPAIR_PLOT_START_DATE))
+    ]
+    if plot_data[VALUATION_REPAIR_INDEX_NAME].notna().sum() < 2:
+        raise RuntimeError("估值修复指数有效历史不足")
+    chart_font = _valuation_chart_font()
+    fig, ax_left = plt.subplots(figsize=CHART_FIGSIZE, dpi=CHART_DPI)
+    ax_right = ax_left.twinx()
+    repair_line, = ax_left.plot(
+        plot_data["交易日期"],
+        plot_data[VALUATION_REPAIR_INDEX_NAME],
+        color=RED,
+        linewidth=1.0,
+        label=VALUATION_REPAIR_INDEX_NAME,
+        zorder=4,
+    )
+    return_line, = ax_right.plot(
+        plot_data["交易日期"],
+        plot_data[VALUATION_REPAIR_FORWARD_RETURN_NAME],
+        color=BLUE,
+        linewidth=1.0,
+        label="中证转债指数后推70日涨跌幅（%）",
+        zorder=4,
+    )
+    repair_history = plot_data.loc[
+        plot_data[VALUATION_REPAIR_INDEX_NAME].notna(),
+        ["交易日期", VALUATION_REPAIR_INDEX_NAME],
+    ].sort_values("交易日期")
+    latest_repair = float(repair_history[VALUATION_REPAIR_INDEX_NAME].iloc[-1])
+    previous_repair = float(repair_history[VALUATION_REPAIR_INDEX_NAME].iloc[-2])
+    panel_title = (
+        f"{VALUATION_REPAIR_INDEX_NAME}{latest_repair:.2f}%；"
+        f"{latest_repair - previous_repair:+.2f}pct"
+    )
+    add_chart_panel_title(
+        fig,
+        panel_title,
+        band_height=DOUBLE_LINE_TITLE_BAND_HEIGHT,
+    )
+
+    repair_values = repair_history[VALUATION_REPAIR_INDEX_NAME]
+    repair_lower = float(repair_values.min())
+    repair_upper = float(repair_values.max())
+    repair_span = repair_upper - repair_lower
+    if repair_span <= np.finfo(float).eps:
+        repair_span = max(abs(repair_upper) * 0.1, 1.0)
+    repair_padding = repair_span * 0.05
+    ax_left.set_ylim(repair_lower - repair_padding, repair_upper + repair_padding)
+    ax_left.yaxis.set_major_locator(
+        mticker.MaxNLocator(nbins=6, steps=[1, 2, 2.5, 5, 10], min_n_ticks=4)
+    )
+    ax_left.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f"))
+
+    return_values = plot_data[VALUATION_REPAIR_FORWARD_RETURN_NAME].dropna()
+    return_lower = float(return_values.min())
+    return_upper = float(return_values.max())
+    return_span = return_upper - return_lower
+    if return_span <= np.finfo(float).eps:
+        return_span = max(abs(return_upper) * 0.1, 1.0)
+    return_padding = return_span * 0.05
+    ax_right.set_ylim(return_lower - return_padding, return_upper + return_padding)
+    ax_right.yaxis.set_major_locator(
+        mticker.MaxNLocator(nbins=7, steps=[1, 2, 2.5, 5, 10], min_n_ticks=4)
+    )
+    ax_right.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+
+    ax_left.set_xlim(
+        pd.Timestamp(VALUATION_REPAIR_PLOT_START_DATE),
+        plot_data["交易日期"].max(),
+    )
+    ax_left.xaxis.set_major_locator(mdates.YearLocator())
+    ax_left.xaxis.set_minor_locator(mdates.MonthLocator(interval=3))
+    ax_left.xaxis.set_major_formatter(
+        mdates.DateFormatter(date_axis_format_for_span(plot_data["交易日期"]))
+    )
+    style_axis(ax_left, chart_font)
+    ax_left.grid(False, which="both", axis="both")
+    ax_right.grid(False, which="both", axis="both")
+    ax_left.spines["top"].set_visible(False)
+    ax_right.spines["top"].set_visible(False)
+    ax_left.tick_params(axis="x", top=False, labeltop=False)
+    ax_right.tick_params(axis="x", top=False, labeltop=False)
+    ax_right.tick_params(axis="y", colors="black", labelsize=TICK_FONT_SIZE, width=0.5)
+    ax_right.spines["right"].set_color("black")
+    ax_right.spines["right"].set_linewidth(0.5)
+    for label in ax_right.get_yticklabels():
+        label.set_fontproperties(chart_font)
+        label.set_fontsize(TICK_FONT_SIZE)
+    legend = ax_left.legend(
+        [repair_line, return_line],
+        [repair_line.get_label(), return_line.get_label()],
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.22),
+        ncol=1,
+        frameon=False,
+        prop=chart_font,
+    )
+    for legend_text in legend.get_texts():
+        legend_text.set_fontsize(7)
+    fig.subplots_adjust(left=0.13, right=0.87, top=0.87, bottom=0.28)
+    fig.savefig(output_path, dpi=CHART_DPI, facecolor="white")
+    plt.close(fig)
+
+
+def build_group_valuation_titles(
+    sources: dict[str, dict[str, object]],
+) -> dict[str, str]:
+    """生成分组拟合溢价率图表标题，保留既有数据变动字段格式。"""
+    titles: dict[str, str] = {}
+
+    parity = sources.get("parity")
+    if parity is not None:
+        titles["parity"] = (
+            f"平价分类拟合溢价率，{str(parity['largestChangeGroup'])}："
+            f"{float(parity['largestChangePctPoint']):+.2f}pct"
+        )
+
+    title_specs = (
+        ("equity", "股债性分类拟合溢价率", "偏股型", "偏债型", "："),
+        ("rating", "评级分类拟合溢价率", "AAA/AA+", "AA/AA-", "："),
+        ("balance", "余额分类拟合溢价率：", "0-3", "50+", "："),
+        ("market_cap", "市值分类拟合溢价率：", "0-50", "300+", "："),
+        ("sector", "各板块拟合溢价率：", "科技", "周期", "："),
+    )
+    for key, title, first_group, second_group, separator in title_specs:
+        details = sources.get(key)
+        if details is None:
+            continue
+        first = details[first_group]
+        second = details[second_group]
+        titles[key] = (
+            f"{title}\n"
+            f"{first_group}{separator}{float(first['latestValue']):.2f}%，"
+            f"{float(first['dailyChangePctPoint']):+.2f}pct；"
+            f"{second_group}{separator}{float(second['latestValue']):.2f}%，"
+            f"{float(second['dailyChangePctPoint']):+.2f}pct"
+        )
+
+    return titles
+
+
 def plot_parity_group_valuation(
     data: pd.DataFrame,
     source: dict[str, object],
     output_path: Path,
+    panel_title: Optional[str] = None,
 ) -> None:
     """绘制直接取自 Parquet 的分平价多因子修正拟合溢价率。"""
     chart_font = _valuation_chart_font()
@@ -4281,11 +6036,8 @@ def plot_parity_group_valuation(
         lines.append(line)
         labels.append(line.get_label())
 
-    largest_group = str(source["largestChangeGroup"])
-    largest_change = float(source["largestChangePctPoint"])
-    panel_title = (
-        f"平价分类溢价率，{largest_group}：{largest_change:+.2f}pct"
-    )
+    if panel_title is None:
+        panel_title = build_group_valuation_titles({"parity": source})["parity"]
     # 与同排右侧双行标题共用该排较高的标题栏高度。
     add_chart_panel_title(
         fig,
@@ -4423,7 +6175,16 @@ def plot_sector_mean_metric(
     unit_suffix: str,
     output_path: Path,
 ) -> None:
-    """绘制科技、金融、制造、消费和周期五大板块的日度均值序列。"""
+    """绘制自2023年起的科技、金融、制造、消费和周期日度均值序列。"""
+    plot_data = data.loc[
+        pd.to_datetime(data["交易日期"], errors="coerce").ge(
+            SECTOR_MEAN_PLOT_START_DATE
+        )
+    ].copy()
+    if plot_data.empty:
+        raise RuntimeError(
+            f"{panel_title}在{SECTOR_MEAN_PLOT_START_DATE:%Y-%m-%d}后没有可绘制的数据"
+        )
     chart_font = _valuation_chart_font()
     fig, ax = plt.subplots(figsize=CHART_FIGSIZE, dpi=CHART_DPI)
     palette = (RED, BLUE, "#A6A6A6", "#E6B9B8", "#B7DEE8")
@@ -4432,7 +6193,7 @@ def plot_sector_mean_metric(
     for sector, color in zip(SECTOR_ORDER, palette):
         column = f"{metric}_{sector}"
         value_columns.append(column)
-        series = data.dropna(subset=[column])
+        series = plot_data.dropna(subset=[column])
         line, = ax.plot(
             series["交易日期"],
             series[column],
@@ -4449,7 +6210,7 @@ def plot_sector_mean_metric(
         band_height=SINGLE_LINE_TITLE_BAND_HEIGHT,
     )
 
-    values = data[value_columns].stack().dropna()
+    values = plot_data[value_columns].stack().dropna()
     if values.empty:
         raise RuntimeError(f"{panel_title}没有可绘制的有效数据")
     value_min = float(values.min())
@@ -4463,15 +6224,17 @@ def plot_sector_mean_metric(
         ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.2f"))
     else:
         ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.2f}"))
-    ax.set_xlim(data["交易日期"].min(), data["交易日期"].max())
-    tick_dates = [pd.Timestamp(data["交易日期"].min())]
+    ax.set_xlim(plot_data["交易日期"].min(), plot_data["交易日期"].max())
+    tick_dates = [pd.Timestamp(plot_data["交易日期"].min())]
     tick_dates.extend(
         pd.Timestamp(year=year, month=1, day=1)
-        for year in range(tick_dates[0].year + 1, data["交易日期"].max().year + 1)
+        for year in range(
+            tick_dates[0].year + 1, plot_data["交易日期"].max().year + 1
+        )
     )
     ax.set_xticks(tick_dates)
     ax.xaxis.set_major_formatter(
-        mdates.DateFormatter(date_axis_format_for_span(data["交易日期"]))
+        mdates.DateFormatter(date_axis_format_for_span(plot_data["交易日期"]))
     )
     _style_valuation_axis(ax, chart_font)
     for label in ax.get_xticklabels():
@@ -4732,6 +6495,261 @@ def plot_index_performance_table(
     plt.close(fig)
 
 
+def _blend_rgb(
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+    ratio: float,
+) -> tuple[int, int, int]:
+    ratio = max(0.0, min(1.0, float(ratio)))
+    return tuple(
+        int(round(start_value + (end_value - start_value) * ratio))
+        for start_value, end_value in zip(start, end)
+    )
+
+
+def _return_heat_color(
+    value: float | None,
+    scale: float,
+    negative_color: tuple[int, int, int],
+    zero_color: tuple[int, int, int],
+    positive_color: tuple[int, int, int],
+) -> tuple[int, int, int]:
+    if value is None or pd.isna(value) or scale <= 0:
+        return (255, 255, 255)
+    ratio = min(abs(float(value)) / scale, 1.0)
+    if value < 0:
+        return _blend_rgb(zero_color, negative_color, ratio)
+    return _blend_rgb(zero_color, positive_color, ratio)
+
+
+def plot_industry_market_table(
+    data: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """绘制申万行业正股、转债涨跌幅与估值分位数大表。"""
+    if len(data) != len(INDUSTRY_INDEX_SPECS):
+        raise RuntimeError(
+            f"行业大表行数异常：{len(data)}，预期 {len(INDUSTRY_INDEX_SPECS)}"
+        )
+    column_specs = (
+        ("行业名称", "名称", "name"),
+        ("正股日涨跌幅", "日涨跌幅", "stock"),
+        ("正股周涨跌幅", "周涨跌幅", "stock"),
+        ("正股月涨跌幅", "月涨跌幅", "stock"),
+        ("正股年初至今涨跌幅", "年初至今\n涨跌幅", "stock"),
+        ("转债日涨跌幅", "日涨跌幅", "bond"),
+        ("转债周涨跌幅", "周涨跌幅", "bond"),
+        ("转债月涨跌幅", "月涨跌幅", "bond"),
+        ("转债年初至今涨跌幅", "年初至今\n涨跌幅", "bond"),
+        ("行业指数PE", "PE（TTM）", "valuation"),
+        ("PE三年分位数", "3年分位数", "percentileBlue"),
+        ("PE十年分位数", "10年分位数", "percentileRed"),
+        ("行业指数PB", "PB（LF）", "valuation"),
+        ("PB三年分位数", "3年分位数", "percentileBlue"),
+        ("PB十年分位数", "10年分位数", "percentileRed"),
+    )
+    column_widths = [138] + [98] * 8 + [100, 160, 160, 100, 160, 160]
+    if sum(column_widths) != DOUBLE_CHART_PIXEL_WIDTH:
+        raise RuntimeError("行业大表列宽合计与日报宽度不一致")
+    group_header_height = 39
+    header_height = 60
+    row_height = 31
+    expected_height = group_header_height + header_height + row_height * len(data)
+    if expected_height != INDUSTRY_TABLE_PIXEL_HEIGHT:
+        raise RuntimeError(
+            f"行业大表高度常量异常：{expected_height} != {INDUSTRY_TABLE_PIXEL_HEIGHT}"
+        )
+
+    image = Image.new(
+        "RGB",
+        (DOUBLE_CHART_PIXEL_WIDTH, INDUSTRY_TABLE_PIXEL_HEIGHT),
+        "white",
+    )
+    draw = ImageDraw.Draw(image)
+    body_font = ImageFont.truetype(str(FONT_PATH), 21)
+    header_font = ImageFont.truetype(str(FONT_PATH), 20)
+    group_font = ImageFont.truetype(str(FONT_PATH), 24)
+    header_fill = (32, 56, 100)
+    header_text = (255, 255, 255)
+    grid_color = (0, 0, 0)
+    negative_text = (255, 0, 0)
+
+    x_positions = [0]
+    for width in column_widths:
+        x_positions.append(x_positions[-1] + width)
+
+    def draw_centered_text(
+        box: tuple[int, int, int, int],
+        text_value: str,
+        font: ImageFont.FreeTypeFont,
+        fill: tuple[int, int, int],
+    ) -> None:
+        left, top, right, bottom = box
+        bbox = draw.multiline_textbbox(
+            (0, 0), text_value, font=font, spacing=1, align="center"
+        )
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        draw.multiline_text(
+            (
+                left + (right - left - text_width) / 2,
+                top + (bottom - top - text_height) / 2 - bbox[1],
+            ),
+            text_value,
+            font=font,
+            fill=fill,
+            spacing=1,
+            align="center",
+        )
+
+    group_ranges = (
+        (0, 1, "名称"),
+        (1, 5, "正股"),
+        (5, 9, "转债"),
+        (9, 15, "正股估值分位数"),
+    )
+    for start_index, end_index, label in group_ranges:
+        group_bottom = (
+            group_header_height + header_height
+            if label == "名称"
+            else group_header_height
+        )
+        box = (
+            x_positions[start_index],
+            0,
+            x_positions[end_index],
+            group_bottom,
+        )
+        draw.rectangle(box, fill=header_fill, outline=grid_color, width=1)
+        draw_centered_text(box, label, group_font, header_text)
+
+    for column_index, (_, label, _) in enumerate(column_specs):
+        if column_index == 0:
+            continue
+        box = (
+            x_positions[column_index],
+            group_header_height,
+            x_positions[column_index + 1],
+            group_header_height + header_height,
+        )
+        draw.rectangle(box, fill=header_fill, outline=grid_color, width=1)
+        draw_centered_text(box, label, header_font, header_text)
+
+    stock_columns = [spec[0] for spec in column_specs if spec[2] == "stock"]
+    bond_columns = [spec[0] for spec in column_specs if spec[2] == "bond"]
+    stock_scales = {
+        column: max(
+            1e-9,
+            float(pd.to_numeric(data[column], errors="coerce").abs().max()),
+        )
+        for column in stock_columns
+    }
+    bond_scales = {
+        column: max(
+            1e-9,
+            float(pd.to_numeric(data[column], errors="coerce").abs().max()),
+        )
+        for column in bond_columns
+    }
+    for row_position, (_, row) in enumerate(data.iterrows()):
+        top = group_header_height + header_height + row_position * row_height
+        bottom = top + row_height
+        for column_index, (column, _, kind) in enumerate(column_specs):
+            left = x_positions[column_index]
+            right = x_positions[column_index + 1]
+            raw_value = row[column]
+            numeric_value = (
+                None
+                if kind == "name" or raw_value is None or pd.isna(raw_value)
+                else float(raw_value)
+            )
+            if kind == "stock":
+                cell_fill = _return_heat_color(
+                    numeric_value,
+                    stock_scales[column],
+                    (91, 155, 213),
+                    (255, 255, 255),
+                    (248, 105, 107),
+                )
+            elif kind == "bond":
+                cell_fill = _return_heat_color(
+                    numeric_value,
+                    bond_scales[column],
+                    (99, 190, 123),
+                    (255, 235, 132),
+                    (248, 105, 107),
+                )
+            elif kind == "valuation":
+                cell_fill = (242, 242, 242)
+            else:
+                cell_fill = (255, 255, 255)
+            box = (left, top, right, bottom)
+            draw.rectangle(box, fill=cell_fill, outline=grid_color, width=1)
+
+            if kind in ("percentileBlue", "percentileRed") and numeric_value is not None:
+                bar_ratio = max(0.0, min(100.0, numeric_value)) / 100.0
+                bar_right = left + 2 + int((right - left - 4) * bar_ratio)
+                bar_color = (91, 155, 213) if kind == "percentileBlue" else (255, 102, 102)
+                draw.rectangle(
+                    (left + 2, top + 3, bar_right, bottom - 3),
+                    fill=bar_color,
+                )
+
+            if kind == "name":
+                display_text = str(raw_value)
+            elif numeric_value is None:
+                display_text = ""
+            elif kind == "bond":
+                display_text = f"{numeric_value:.2f}%"
+            else:
+                display_text = f"{numeric_value:.2f}"
+            text_color = (
+                negative_text
+                if numeric_value is not None
+                and numeric_value < 0
+                and kind in ("stock", "bond")
+                else (0, 0, 0)
+            )
+            draw_centered_text(box, display_text, body_font, text_color)
+            draw.rectangle(box, outline=grid_color, width=1)
+
+    temporary_output = output_path.with_name(
+        f".{output_path.stem}.{os.getpid()}.tmp{output_path.suffix}"
+    )
+    try:
+        image.save(temporary_output, dpi=(CHART_DPI, CHART_DPI))
+        os.replace(temporary_output, output_path)
+    finally:
+        if temporary_output.exists():
+            temporary_output.unlink()
+
+
+def render_report_header(run_date: date) -> Image.Image:
+    """在条款表头底图上绘制加大加粗的日报标题。"""
+    if not REPORT_HEADER_PATH.is_file():
+        raise FileNotFoundError(f"未找到日报表头图片：{REPORT_HEADER_PATH}")
+    with Image.open(REPORT_HEADER_PATH) as source:
+        header = source.convert("RGBA")
+    draw = ImageDraw.Draw(header)
+    text = (
+        "【华创固收·周冠南团队】\n"
+        f"可转债市场日度跟踪{run_date:%Y%m%d}"
+    )
+    font = ImageFont.truetype(str(FONT_PATH), REPORT_HEADER_FONT_SIZE)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    text_x = (header.width - text_width) // 2
+    text_y = (header.height - text_height) // 2 - 40
+    draw.text(
+        (text_x, text_y),
+        text,
+        fill="white",
+        font=font,
+    )
+    return header
+
+
 def compose_index_market_overview(
     table_path: Path,
     turnover_path: Path,
@@ -4742,6 +6760,8 @@ def compose_index_market_overview(
     intraday_valuation_path: Path,
     parity_group_valuation_path: Path,
     price_parity_path: Path,
+    equity_bond_weighted_premium_path: Path,
+    valuation_repair_path: Path,
     maturity_group_path: Path,
     subnew_premium_path: Path,
     equity_bond_group_path: Path,
@@ -4756,38 +6776,19 @@ def compose_index_market_overview(
     sector_mean_parity_path: Path,
     sector_mean_conversion_premium_path: Path,
     sector_mean_bond_premium_path: Path,
+    industry_table_path: Path,
     output_path: Path,
     run_date: date,
 ) -> None:
     """将指数表、资金表现与转债估值模块合成为日报长图。"""
-    if not REPORT_HEADER_PATH.is_file():
-        raise FileNotFoundError(f"未找到日报表头图片：{REPORT_HEADER_PATH}")
-    with Image.open(REPORT_HEADER_PATH) as source_header:
-        source_header = source_header.convert("RGBA")
-        header_draw = ImageDraw.Draw(source_header)
-        header_text = (
-            "【华创固收·周冠南团队】\n"
-            f"可转债市场日度跟踪{run_date:%Y%m%d}"
-        )
-        header_font = ImageFont.truetype(str(FONT_PATH), 60)
-        text_bbox = header_draw.textbbox((0, 0), header_text, font=header_font)
-        text_width = text_bbox[2] - text_bbox[0]
-        text_height = text_bbox[3] - text_bbox[1]
-        text_x = (source_header.width - text_width) // 2
-        text_y = (source_header.height - text_height) // 2 - 40
-        header_draw.text(
-            (text_x, text_y),
-            header_text,
-            fill="white",
-            font=header_font,
-        )
-        header_height = round(
-            source_header.height * DOUBLE_CHART_PIXEL_WIDTH / source_header.width
-        )
-        resized_header = source_header.resize(
-            (DOUBLE_CHART_PIXEL_WIDTH, header_height), Image.Resampling.LANCZOS
-        )
-        report_header = np.asarray(resized_header, dtype=np.float32) / 255.0
+    source_header = render_report_header(run_date)
+    header_height = round(
+        source_header.height * DOUBLE_CHART_PIXEL_WIDTH / source_header.width
+    )
+    resized_header = source_header.resize(
+        (DOUBLE_CHART_PIXEL_WIDTH, header_height), Image.Resampling.LANCZOS
+    )
+    report_header = np.asarray(resized_header, dtype=np.float32) / 255.0
 
     table_image = plt.imread(table_path)
     turnover_image = plt.imread(turnover_path)
@@ -4798,6 +6799,8 @@ def compose_index_market_overview(
     intraday_valuation_image = plt.imread(intraday_valuation_path)
     parity_group_valuation_image = plt.imread(parity_group_valuation_path)
     price_parity_image = plt.imread(price_parity_path)
+    equity_bond_weighted_premium_image = plt.imread(equity_bond_weighted_premium_path)
+    valuation_repair_image = plt.imread(valuation_repair_path)
     maturity_group_image = plt.imread(maturity_group_path)
     subnew_premium_image = plt.imread(subnew_premium_path)
     equity_bond_group_image = plt.imread(equity_bond_group_path)
@@ -4814,6 +6817,7 @@ def compose_index_market_overview(
         sector_mean_conversion_premium_path
     )
     sector_mean_bond_premium_image = plt.imread(sector_mean_bond_premium_path)
+    industry_table_image = plt.imread(industry_table_path)
     expected_sizes = {
         "指数表": (TABLE_PIXEL_HEIGHT, DOUBLE_CHART_PIXEL_WIDTH),
         "成交额图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
@@ -4824,6 +6828,8 @@ def compose_index_market_overview(
         "盘中百元拟合溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "分平价多因子修正拟合溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "余额加权平价与收盘价中位数图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
+        "股债性分类转股溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
+        "转债估值修复指数图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "分剩余期限拟合溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "次新券平均转股溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "股债型拟合溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
@@ -4838,6 +6844,10 @@ def compose_index_market_overview(
         "各行业平均平价图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "各行业平均转股溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
         "各行业平均纯债溢价率图": (CHART_PIXEL_HEIGHT, CHART_PIXEL_WIDTH),
+        "行业涨跌与估值大表": (
+            INDUSTRY_TABLE_PIXEL_HEIGHT,
+            DOUBLE_CHART_PIXEL_WIDTH,
+        ),
     }
     for label, image, expected in (
         ("指数表", table_image, expected_sizes["指数表"]),
@@ -4856,6 +6866,16 @@ def compose_index_market_overview(
             "余额加权平价与收盘价中位数图",
             price_parity_image,
             expected_sizes["余额加权平价与收盘价中位数图"],
+        ),
+        (
+            "股债性分类转股溢价率图",
+            equity_bond_weighted_premium_image,
+            expected_sizes["股债性分类转股溢价率图"],
+        ),
+        (
+            "转债估值修复指数图",
+            valuation_repair_image,
+            expected_sizes["转债估值修复指数图"],
         ),
         (
             "分剩余期限拟合溢价率图",
@@ -4927,6 +6947,11 @@ def compose_index_market_overview(
             sector_mean_bond_premium_image,
             expected_sizes["各行业平均纯债溢价率图"],
         ),
+        (
+            "行业涨跌与估值大表",
+            industry_table_image,
+            expected_sizes["行业涨跌与估值大表"],
+        ),
     ):
         if image.shape[:2] != expected:
             raise RuntimeError(
@@ -4984,8 +7009,9 @@ def compose_index_market_overview(
         (
             header_height
             + TABLE_PIXEL_HEIGHT
-            + CHART_PIXEL_HEIGHT * 11
-            + SECTION_BAR_HEIGHT * 4,
+            + CHART_PIXEL_HEIGHT * 12
+            + SECTION_BAR_HEIGHT * 4
+            + INDUSTRY_TABLE_PIXEL_HEIGHT,
             DOUBLE_CHART_PIXEL_WIDTH,
             4,
         ),
@@ -5030,7 +7056,7 @@ def compose_index_market_overview(
         valuation_chart_end:second_valuation_chart_end,
         :CHART_PIXEL_WIDTH,
         :,
-    ] = to_rgba(parity_group_valuation_image)
+    ] = to_rgba(valuation_repair_image)
     canvas[
         valuation_chart_end:second_valuation_chart_end,
         CHART_PIXEL_WIDTH:,
@@ -5041,48 +7067,59 @@ def compose_index_market_overview(
         second_valuation_chart_end:third_valuation_chart_end,
         :CHART_PIXEL_WIDTH,
         :,
-    ] = to_rgba(maturity_group_image)
+    ] = to_rgba(equity_bond_weighted_premium_image)
     canvas[
         second_valuation_chart_end:third_valuation_chart_end,
         CHART_PIXEL_WIDTH:,
         :,
-    ] = to_rgba(subnew_premium_image)
+    ] = to_rgba(parity_group_valuation_image)
     fourth_valuation_chart_end = third_valuation_chart_end + CHART_PIXEL_HEIGHT
     canvas[
         third_valuation_chart_end:fourth_valuation_chart_end,
         :CHART_PIXEL_WIDTH,
         :,
-    ] = to_rgba(equity_bond_group_image)
+    ] = to_rgba(maturity_group_image)
     canvas[
         third_valuation_chart_end:fourth_valuation_chart_end,
         CHART_PIXEL_WIDTH:,
         :,
-    ] = to_rgba(rating_group_image)
+    ] = to_rgba(subnew_premium_image)
     fifth_valuation_chart_end = fourth_valuation_chart_end + CHART_PIXEL_HEIGHT
     canvas[
         fourth_valuation_chart_end:fifth_valuation_chart_end,
         :CHART_PIXEL_WIDTH,
         :,
-    ] = to_rgba(balance_group_image)
+    ] = to_rgba(equity_bond_group_image)
     canvas[
         fourth_valuation_chart_end:fifth_valuation_chart_end,
         CHART_PIXEL_WIDTH:,
         :,
-    ] = to_rgba(market_cap_group_image)
+    ] = to_rgba(rating_group_image)
     sixth_valuation_chart_end = fifth_valuation_chart_end + CHART_PIXEL_HEIGHT
     canvas[
         fifth_valuation_chart_end:sixth_valuation_chart_end,
         :CHART_PIXEL_WIDTH,
         :,
-    ] = to_rgba(sector_group_image)
+    ] = to_rgba(balance_group_image)
     canvas[
         fifth_valuation_chart_end:sixth_valuation_chart_end,
         CHART_PIXEL_WIDTH:,
         :,
-    ] = to_rgba(close_price_distribution_image)
-    etf_section_end = sixth_valuation_chart_end + SECTION_BAR_HEIGHT
+    ] = to_rgba(market_cap_group_image)
+    seventh_valuation_chart_end = sixth_valuation_chart_end + CHART_PIXEL_HEIGHT
     canvas[
-        sixth_valuation_chart_end:etf_section_end,
+        sixth_valuation_chart_end:seventh_valuation_chart_end,
+        :CHART_PIXEL_WIDTH,
+        :,
+    ] = to_rgba(sector_group_image)
+    canvas[
+        sixth_valuation_chart_end:seventh_valuation_chart_end,
+        CHART_PIXEL_WIDTH:,
+        :,
+    ] = to_rgba(close_price_distribution_image)
+    etf_section_end = seventh_valuation_chart_end + SECTION_BAR_HEIGHT
+    canvas[
+        seventh_valuation_chart_end:etf_section_end,
         :,
         :,
     ] = etf_section_bar
@@ -5125,6 +7162,12 @@ def compose_index_market_overview(
         CHART_PIXEL_WIDTH:,
         :,
     ] = to_rgba(sector_mean_bond_premium_image)
+    industry_table_end = second_industry_chart_end + INDUSTRY_TABLE_PIXEL_HEIGHT
+    canvas[
+        second_industry_chart_end:industry_table_end,
+        :,
+        :,
+    ] = to_rgba(industry_table_image)
     temporary_output = output_path.with_name(
         f".{output_path.stem}.{os.getpid()}.tmp{output_path.suffix}"
     )
@@ -5134,6 +7177,116 @@ def compose_index_market_overview(
     finally:
         if temporary_output.exists():
             temporary_output.unlink()
+
+
+def compose_fuguo_daily_report(
+    daily_valuation_path: Path,
+    intraday_valuation_path: Path,
+    valuation_repair_path: Path,
+    price_parity_path: Path,
+    parity_group_valuation_path: Path,
+    equity_bond_weighted_premium_path: Path,
+    output_path: Path,
+) -> None:
+    """将转债估值分隔栏与六张指定图按三行双列合成为富国日报。"""
+    chart_paths = (
+        daily_valuation_path,
+        intraday_valuation_path,
+        valuation_repair_path,
+        price_parity_path,
+        parity_group_valuation_path,
+        equity_bond_weighted_premium_path,
+    )
+    charts: list[Image.Image] = []
+    try:
+        for path in chart_paths:
+            if not path.is_file():
+                raise FileNotFoundError(f"未找到富国日报图表：{path}")
+            with Image.open(path) as source:
+                chart = source.convert("RGB")
+            if chart.size != (CHART_PIXEL_WIDTH, CHART_PIXEL_HEIGHT):
+                raise RuntimeError(
+                    f"富国日报图表尺寸异常：{path.name}为"
+                    f"{chart.width}×{chart.height}，预期"
+                    f"{CHART_PIXEL_WIDTH}×{CHART_PIXEL_HEIGHT}"
+                )
+            charts.append(chart)
+
+        output_height = SECTION_BAR_HEIGHT + CHART_PIXEL_HEIGHT * 3
+        canvas = Image.new(
+            "RGB", (DOUBLE_CHART_PIXEL_WIDTH, output_height), "white"
+        )
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle(
+            (0, 0, DOUBLE_CHART_PIXEL_WIDTH, SECTION_BAR_HEIGHT),
+            fill="#203864",
+        )
+        section_font_path = (
+            TITLE_FONT_PATH if TITLE_FONT_PATH.is_file() else FONT_PATH
+        )
+        section_font = ImageFont.truetype(str(section_font_path), 20)
+        title = "转债估值"
+        title_box = draw.textbbox((0, 0), title, font=section_font)
+        title_width = title_box[2] - title_box[0]
+        title_height = title_box[3] - title_box[1]
+        draw.text(
+            (
+                (DOUBLE_CHART_PIXEL_WIDTH - title_width) / 2,
+                (SECTION_BAR_HEIGHT - title_height) / 2 - title_box[1],
+            ),
+            title,
+            font=section_font,
+            fill="white",
+        )
+        for position, chart in enumerate(charts):
+            row, column = divmod(position, 2)
+            canvas.paste(
+                chart,
+                (
+                    column * CHART_PIXEL_WIDTH,
+                    SECTION_BAR_HEIGHT + row * CHART_PIXEL_HEIGHT,
+                ),
+            )
+
+        temporary_output = output_path.with_name(
+            f".{output_path.stem}.{os.getpid()}.tmp{output_path.suffix}"
+        )
+        try:
+            canvas.save(temporary_output, dpi=(CHART_DPI, CHART_DPI))
+            os.replace(temporary_output, output_path)
+        finally:
+            if temporary_output.exists():
+                temporary_output.unlink()
+    finally:
+        for chart in charts:
+            chart.close()
+
+
+def export_numbered_titleless_small_charts(
+    output_dir: Path,
+    chart_specs: tuple[tuple[int, str, str, float], ...] = SMALL_CHART_EXPORT_SPECS,
+) -> None:
+    """长图合成后导出不带标题栏、按阅读顺序编号的独立小图。"""
+    for sequence, label, source_name, title_band_height in chart_specs:
+        source_path = output_dir / source_name
+        if not source_path.is_file():
+            raise FileNotFoundError(f"未找到小图源文件：{source_path}")
+        output_path = output_dir / f"{sequence:02d}_{label}.png"
+        with Image.open(source_path) as source:
+            crop_top = round(source.height * title_band_height)
+            if crop_top <= 0 or crop_top >= source.height:
+                raise RuntimeError(f"小图标题栏高度异常：{source_path.name}")
+            titleless = source.crop((0, crop_top, source.width, source.height))
+            temporary_output = output_path.with_name(
+                f".{output_path.stem}.{os.getpid()}.tmp.png"
+            )
+            try:
+                titleless.save(temporary_output)
+                os.replace(temporary_output, output_path)
+            finally:
+                if temporary_output.exists():
+                    temporary_output.unlink()
+        source_path.unlink()
 
 
 def build_workbook(
@@ -5151,8 +7304,10 @@ def build_workbook(
     return_source: dict[str, object],
     daily_valuation: pd.DataFrame,
     valuation_source: dict[str, object],
+    valuation_repair: pd.DataFrame,
     intraday_valuation: pd.DataFrame,
     intraday_valuation_source: dict[str, object],
+    parity_interval_premium: pd.DataFrame,
     parity_group_valuation: pd.DataFrame,
     parity_group_valuation_source: dict[str, object],
     equity_bond_group_valuation: pd.DataFrame,
@@ -5169,10 +7324,15 @@ def build_workbook(
     sector_group_valuation_source: dict[str, object],
     sector_mean_metrics: pd.DataFrame,
     sector_mean_source: dict[str, object],
+    industry_history_metrics: pd.DataFrame,
+    industry_performance: pd.DataFrame,
+    industry_performance_source: dict[str, object],
     close_price_distribution: pd.DataFrame,
     close_price_distribution_source: dict[str, object],
     price_parity: pd.DataFrame,
     price_parity_source: dict[str, object],
+    equity_bond_weighted: pd.DataFrame,
+    equity_bond_weighted_source: dict[str, object],
     subnew_bond: pd.DataFrame,
     subnew_bond_source: dict[str, object],
     run_date: date,
@@ -5316,12 +7476,65 @@ def build_workbook(
             }
             for row in daily_valuation.itertuples(index=False)
         ],
+        "valuationRepair": [
+            {
+                "date": f"{row.交易日期:%Y-%m-%d}",
+                "repair": (
+                    None
+                    if pd.isna(getattr(row, VALUATION_REPAIR_INDEX_NAME))
+                    else float(getattr(row, VALUATION_REPAIR_INDEX_NAME))
+                ),
+                "forwardReturn": float(
+                    getattr(row, VALUATION_REPAIR_FORWARD_RETURN_NAME)
+                ),
+            }
+            for row in valuation_repair.itertuples(index=False)
+        ],
         "valuationIntraday": [
             {
                 "datetime": pd.Timestamp(row.日期).strftime("%Y-%m-%dT%H:%M:%S"),
                 "premium": float(row.转股溢价率),
             }
             for row in intraday_valuation.itertuples(index=False)
+        ],
+        "parityIntervalPremium": [
+            {
+                "date": f"{row['交易日期']:%Y-%m-%d}",
+                "above130": (
+                    None if pd.isna(row["130以上"]) else float(row["130以上"])
+                ),
+                "p120_130": (
+                    None
+                    if pd.isna(row["120-130（含130）"])
+                    else float(row["120-130（含130）"])
+                ),
+                "p110_120": (
+                    None
+                    if pd.isna(row["110-120（含120）"])
+                    else float(row["110-120（含120）"])
+                ),
+                "p100_110": (
+                    None
+                    if pd.isna(row["100-110（含110）"])
+                    else float(row["100-110（含110）"])
+                ),
+                "p90_100": (
+                    None
+                    if pd.isna(row["90-100（含100）"])
+                    else float(row["90-100（含100）"])
+                ),
+                "p80_90": (
+                    None
+                    if pd.isna(row["80-90（含90）"])
+                    else float(row["80-90（含90）"])
+                ),
+                "le80": (
+                    None
+                    if pd.isna(row["80以下（含80）"])
+                    else float(row["80以下（含80）"])
+                ),
+            }
+            for _, row in parity_interval_premium.iterrows()
         ],
         "parityGroupValuationSource": parity_group_valuation_source,
         "parityGroupValuation": [
@@ -5489,6 +7702,75 @@ def build_workbook(
             }
             for _, row in sector_mean_metrics.iterrows()
         ],
+        "industryHistoryOrder": list(INDUSTRY_HISTORY_ORDER),
+        "industryHistoryMetrics": [
+            {
+                "industry": str(row["行业"]),
+                "date": f"{row['日期']:%Y-%m-%d}",
+                "close": None if pd.isna(row["收盘价"]) else float(row["收盘价"]),
+                "conversionPremium": (
+                    None
+                    if pd.isna(row["转股溢价率"])
+                    else float(row["转股溢价率"])
+                ),
+                "parity": None if pd.isna(row["平价"]) else float(row["平价"]),
+                "bondPremium": (
+                    None
+                    if pd.isna(row["纯债溢价率"])
+                    else float(row["纯债溢价率"])
+                ),
+            }
+            for _, row in industry_history_metrics.iterrows()
+        ],
+        "industryPerformanceSource": industry_performance_source,
+        "industryPerformance": [
+            {
+                "code": str(row["行业代码"]),
+                "name": str(row["行业名称"]),
+                "stockDaily": float(row["正股日涨跌幅"]),
+                "stockWeekly": float(row["正股周涨跌幅"]),
+                "stockMonthly": float(row["正股月涨跌幅"]),
+                "stockYtd": float(row["正股年初至今涨跌幅"]),
+                "bondDaily": (
+                    None
+                    if pd.isna(row["转债日涨跌幅"])
+                    else float(row["转债日涨跌幅"])
+                ),
+                "bondWeekly": (
+                    None
+                    if pd.isna(row["转债周涨跌幅"])
+                    else float(row["转债周涨跌幅"])
+                ),
+                "bondMonthly": (
+                    None
+                    if pd.isna(row["转债月涨跌幅"])
+                    else float(row["转债月涨跌幅"])
+                ),
+                "bondYtd": (
+                    None
+                    if pd.isna(row["转债年初至今涨跌幅"])
+                    else float(row["转债年初至今涨跌幅"])
+                ),
+                "pe": float(row["行业指数PE"]),
+                "pe3y": float(row["PE三年分位数"]),
+                "pe10y": float(row["PE十年分位数"]),
+                "pb": float(row["行业指数PB"]),
+                "pb3y": float(row["PB三年分位数"]),
+                "pb10y": float(row["PB十年分位数"]),
+                "stockDailyFormula": str(row["正股日涨跌幅公式"]),
+                "stockWeeklyFormula": str(row["正股周涨跌幅公式"]),
+                "stockMonthlyFormula": str(row["正股月涨跌幅公式"]),
+                "stockYtdFormula": str(row["正股年初至今涨跌幅公式"]),
+                "peFormula": str(row["行业指数PE公式"]),
+                "pe3yFormula": str(row["PE三年分位数公式"]),
+                "pe10yFormula": str(row["PE十年分位数公式"]),
+                "pbFormula": str(row["行业指数PB公式"]),
+                "pb3yFormula": str(row["PB三年分位数公式"]),
+                "pb10yFormula": str(row["PB十年分位数公式"]),
+                "bondSampleCount": int(row["转债当日样本数"]),
+            }
+            for _, row in industry_performance.iterrows()
+        ],
         "closePriceDistributionSource": close_price_distribution_source,
         "closePriceDistribution": [
             {
@@ -5516,6 +7798,43 @@ def build_workbook(
                 "effectiveBalance": float(row.有效余额),
             }
             for row in price_parity.itertuples(index=False)
+        ],
+        "equityBondWeightedSource": equity_bond_weighted_source,
+        "equityBondWeighted": [
+            {
+                "date": f"{row['交易日期']:%Y-%m-%d}",
+                "stockPremium": (
+                    None
+                    if pd.isna(row["偏股型_转股溢价率"])
+                    else float(row["偏股型_转股溢价率"])
+                ),
+                "balancePremium": (
+                    None
+                    if pd.isna(row["平衡型_转股溢价率"])
+                    else float(row["平衡型_转股溢价率"])
+                ),
+                "bondPremium": (
+                    None
+                    if pd.isna(row["偏债型_转股溢价率"])
+                    else float(row["偏债型_转股溢价率"])
+                ),
+                "stockPrice": (
+                    None
+                    if pd.isna(row["偏股型_收盘价"])
+                    else float(row["偏股型_收盘价"])
+                ),
+                "balancePrice": (
+                    None
+                    if pd.isna(row["平衡型_收盘价"])
+                    else float(row["平衡型_收盘价"])
+                ),
+                "bondPrice": (
+                    None
+                    if pd.isna(row["偏债型_收盘价"])
+                    else float(row["偏债型_收盘价"])
+                ),
+            }
+            for _, row in equity_bond_weighted.iterrows()
         ],
     }
 
@@ -5563,6 +7882,735 @@ def build_workbook(
                 + (result.stdout or "")
                 + (result.stderr or "")
             )
+    enforce_industry_history_workbook_layout(output_path)
+
+
+def enforce_industry_history_workbook_layout(workbook_path: Path) -> None:
+    """确保四张行业历史表冻结首行首列。"""
+    sheet_names = {
+        "行业收盘价历史",
+        "行业平价历史",
+        "行业转股溢价率历史",
+        "行业纯债溢价率历史",
+    }
+    main_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    office_rel_ns = (
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    )
+    package_rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    ET.register_namespace("", main_ns)
+    ET.register_namespace("r", office_rel_ns)
+
+    workbook_path = Path(workbook_path)
+    with zipfile.ZipFile(workbook_path, "r") as source:
+        workbook_root = ET.fromstring(source.read("xl/workbook.xml"))
+        relationships_root = ET.fromstring(
+            source.read("xl/_rels/workbook.xml.rels")
+        )
+        relationships = {
+            relation.attrib["Id"]: relation.attrib["Target"]
+            for relation in relationships_root.findall(
+                f"{{{package_rel_ns}}}Relationship"
+            )
+        }
+        targets: set[str] = set()
+        for sheet in workbook_root.findall(
+            f"{{{main_ns}}}sheets/{{{main_ns}}}sheet"
+        ):
+            if sheet.attrib.get("name") not in sheet_names:
+                continue
+            relationship_id = sheet.attrib.get(f"{{{office_rel_ns}}}id")
+            target = relationships.get(relationship_id or "")
+            if not target:
+                continue
+            member = target.replace("\\", "/").lstrip("/")
+            if not member.startswith("xl/"):
+                member = f"xl/{member}"
+            targets.add(member)
+
+        if len(targets) != len(sheet_names):
+            raise RuntimeError(
+                "行业历史底稿缺少工作表："
+                f"期望{len(sheet_names)}张，实际定位{len(targets)}张"
+            )
+
+        patched: dict[str, bytes] = {}
+        for member in targets:
+            root = ET.fromstring(source.read(member))
+            sheet_views = root.find(f"{{{main_ns}}}sheetViews")
+            if sheet_views is None:
+                sheet_views = ET.Element(f"{{{main_ns}}}sheetViews")
+                root.insert(0, sheet_views)
+            sheet_view = sheet_views.find(f"{{{main_ns}}}sheetView")
+            if sheet_view is None:
+                sheet_view = ET.SubElement(
+                    sheet_views,
+                    f"{{{main_ns}}}sheetView",
+                    {"workbookViewId": "0"},
+                )
+            for child in list(sheet_view):
+                if child.tag in {
+                    f"{{{main_ns}}}pane",
+                    f"{{{main_ns}}}selection",
+                }:
+                    sheet_view.remove(child)
+            pane = ET.Element(
+                f"{{{main_ns}}}pane",
+                {
+                    "xSplit": "1",
+                    "ySplit": "1",
+                    "topLeftCell": "B2",
+                    "activePane": "bottomRight",
+                    "state": "frozen",
+                },
+            )
+            sheet_view.insert(0, pane)
+            for pane_name, active_cell in (
+                ("topRight", "B1"),
+                ("bottomLeft", "A2"),
+                ("bottomRight", "B2"),
+            ):
+                ET.SubElement(
+                    sheet_view,
+                    f"{{{main_ns}}}selection",
+                    {
+                        "pane": pane_name,
+                        "activeCell": active_cell,
+                        "sqref": active_cell,
+                    },
+                )
+            patched[member] = ET.tostring(
+                root, encoding="utf-8", xml_declaration=True
+            )
+
+        temp_handle = tempfile.NamedTemporaryFile(
+            prefix=f"{workbook_path.stem}_",
+            suffix=".xlsx",
+            dir=workbook_path.parent,
+            delete=False,
+        )
+        temp_path = Path(temp_handle.name)
+        temp_handle.close()
+        try:
+            with zipfile.ZipFile(temp_path, "w") as destination:
+                for info in source.infolist():
+                    destination.writestr(info, patched.get(info.filename, source.read(info)))
+            source.close()
+            os.replace(temp_path, workbook_path)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+
+def _commentary_direction(
+    value: float,
+    positive: str = "上涨",
+    negative: str = "下降",
+    zero: str = "持平",
+) -> tuple[str, float]:
+    numeric = float(value)
+    if numeric > 1e-12:
+        return positive, abs(numeric)
+    if numeric < -1e-12:
+        return negative, abs(numeric)
+    return zero, 0.0
+
+
+def _commentary_index_clause(label: str, value: float) -> str:
+    direction, magnitude = _commentary_direction(value)
+    if direction == "持平":
+        return f"{label}环比持平"
+    return f"{label}环比{direction}{magnitude:.2f}%"
+
+
+def _commentary_subscription_text(value_yi: float) -> str:
+    value = float(value_yi)
+    if abs(value) < 1.0:
+        converted = value * 10000.0
+        text = f"{converted:+.3f}".rstrip("0").rstrip(".")
+        return f"{text}万份"
+    text = f"{value:+.3f}".rstrip("0").rstrip(".")
+    return f"{text}亿份"
+
+
+def _commentary_ranked_industries(
+    data: pd.DataFrame,
+    value_column: str,
+) -> tuple[int, int, str, str]:
+    frame = data[["行业名称", value_column]].copy()
+    frame[value_column] = pd.to_numeric(frame[value_column], errors="coerce")
+    frame = frame.dropna(subset=["行业名称", value_column])
+    gainers = frame.loc[frame[value_column].gt(0)].sort_values(
+        value_column, ascending=False
+    )
+    decliners = frame.loc[frame[value_column].lt(0)].sort_values(
+        value_column, ascending=True
+    )
+
+    def render(rows: pd.DataFrame) -> str:
+        return "、".join(
+            f"{row['行业名称']}（{float(row[value_column]):+.2f}%）"
+            for _, row in rows.head(3).iterrows()
+        )
+
+    return len(gainers), len(decliners), render(gainers), render(decliners)
+
+
+def _commentary_sector_change_line(
+    sector_mean_metrics: pd.DataFrame,
+    metric: str,
+    *,
+    percentage_point: bool,
+) -> str:
+    data = sector_mean_metrics.copy()
+    data["交易日期"] = pd.to_datetime(data["交易日期"], errors="coerce")
+    data = data.dropna(subset=["交易日期"]).sort_values("交易日期")
+    if len(data) < 2:
+        raise RuntimeError(f"{metric}板块点评至少需要两个交易日")
+    latest = data.iloc[-1]
+    previous = data.iloc[-2]
+    labels = {
+        "周期": "大周期",
+        "制造": "制造",
+        "科技": "科技",
+        "消费": "大消费",
+        "金融": "大金融",
+    }
+    clauses: list[str] = []
+    for sector in ("周期", "制造", "科技", "消费", "金融"):
+        column = f"{metric}_{sector}"
+        if column not in data.columns:
+            raise RuntimeError(f"板块点评数据缺少字段：{column}")
+        latest_value = float(latest[column])
+        previous_value = float(previous[column])
+        if percentage_point:
+            change = latest_value - previous_value
+            suffix = "pct"
+        else:
+            if previous_value == 0:
+                raise RuntimeError(f"板块点评前值为0，无法计算环比：{column}")
+            change = (latest_value / previous_value - 1.0) * 100.0
+            suffix = "%"
+        clauses.append(f"{labels[sector]}环比{change:+.2f}{suffix}")
+    return "、".join(clauses) + "。"
+
+
+def build_fuguo_daily_text(
+    run_date: date,
+    *,
+    index_performance: pd.DataFrame,
+    turnover: pd.DataFrame,
+    price_parity_source: dict[str, object],
+    valuation_source: dict[str, object],
+) -> str:
+    """生成富国日报使用的精简版转债市场日度跟踪文字。"""
+    index_rows = index_performance.loc[
+        index_performance["指数名称"].astype(str).eq("中证转债"),
+        "日涨跌幅",
+    ]
+    if index_rows.empty or pd.isna(index_rows.iloc[-1]):
+        raise RuntimeError("富国日报点评缺少中证转债指数日涨跌幅")
+    index_change = float(index_rows.iloc[-1])
+    index_direction, index_magnitude = _commentary_direction(
+        index_change, positive="上涨", negative="下跌"
+    )
+
+    turnover_data = turnover.copy()
+    turnover_data["交易日期"] = pd.to_datetime(
+        turnover_data["交易日期"], errors="coerce"
+    )
+    turnover_data["中证转债指数成交额_亿元"] = pd.to_numeric(
+        turnover_data["中证转债指数成交额_亿元"], errors="coerce"
+    )
+    turnover_data = (
+        turnover_data.dropna(
+            subset=["交易日期", "中证转债指数成交额_亿元"]
+        )
+        .sort_values("交易日期")
+        .drop_duplicates("交易日期", keep="last")
+    )
+    if len(turnover_data) < 2:
+        raise RuntimeError("富国日报点评至少需要两个交易日的转债成交额")
+    latest_turnover = float(
+        turnover_data.iloc[-1]["中证转债指数成交额_亿元"]
+    )
+    previous_turnover = float(
+        turnover_data.iloc[-2]["中证转债指数成交额_亿元"]
+    )
+    if previous_turnover == 0:
+        raise RuntimeError("富国日报点评前一交易日转债成交额为0")
+    turnover_change = (latest_turnover / previous_turnover - 1.0) * 100.0
+    turnover_direction, turnover_magnitude = _commentary_direction(
+        turnover_change, positive="增长", negative="下降"
+    )
+    sentiment = (
+        "升温" if turnover_change > 0 else "降温" if turnover_change < 0 else "平稳"
+    )
+
+    price_previous_date = pd.Timestamp(price_parity_source["previousDate"])
+    price_previous_text = (
+        f"{price_previous_date.month}月{price_previous_date.day}日"
+    )
+    median_change = float(price_parity_source["medianPriceDailyChangePct"])
+    median_direction, median_magnitude = _commentary_direction(
+        median_change, positive="上升", negative="下降"
+    )
+
+    valuation_previous_date = pd.Timestamp(valuation_source["previousDate"])
+    valuation_previous_text = (
+        f"{valuation_previous_date.month}月{valuation_previous_date.day}日"
+    )
+    valuation_change = float(valuation_source["dailyChangePctPoint"])
+    valuation_direction, valuation_magnitude = _commentary_direction(
+        valuation_change, positive="上升", negative="下降"
+    )
+    return (
+        f"转债市场日度跟踪{run_date:%Y%m%d}\n"
+        f"中证转债指数{index_direction}{index_magnitude:.2f}%。"
+        f"转债市场成交情绪{sentiment}，可转债市场成交额为"
+        f"{latest_turnover:.2f}亿元，环比{turnover_direction}"
+        f"{turnover_magnitude:.2f}%。"
+        f"价格中位数为{float(price_parity_source['latestMedianPrice']):.2f}元，"
+        f"环比{price_previous_text}{median_direction}{median_magnitude:.2f}%。"
+        f"百元平价拟合转股溢价率为{float(valuation_source['latestValue']):.2f}%，"
+        f"环比{valuation_previous_text}{valuation_direction}"
+        f"{valuation_magnitude:.2f}pct。"
+        f"溢价率在2019年以来"
+        f"{float(valuation_source['percentileSince2019']):.2f}%分位数。"
+    )
+
+
+def build_long_chart_titles(
+    *,
+    turnover: pd.DataFrame,
+    return_summary: dict[str, int],
+    main_money_flow_source: dict[str, object],
+    margin_balance: pd.DataFrame,
+    valuation_source: dict[str, object],
+    valuation_repair: pd.DataFrame,
+    price_parity_source: dict[str, object],
+    equity_bond_weighted_source: dict[str, object],
+    group_valuation_titles: dict[str, str],
+    maturity_title: str,
+    subnew_bond_source: dict[str, object],
+    close_price_distribution_source: dict[str, object],
+    etf_share_source: dict[str, object],
+) -> list[str]:
+    """按长图由上至下、同排由左至右生成全部图表标题。"""
+    turnover_data = turnover.dropna(
+        subset=[
+            "交易日期",
+            "中证转债指数成交额_亿元",
+            "沪深成交额合计_亿元",
+        ]
+    ).sort_values("交易日期")
+    if turnover_data.empty:
+        raise RuntimeError("长图标题缺少成交额数据")
+    latest_turnover = turnover_data.iloc[-1]
+    turnover_title = (
+        f"成交额:转债{float(latest_turnover['中证转债指数成交额_亿元']):.2f}亿，"
+        f"A股{float(latest_turnover['沪深成交额合计_亿元']):.2f}亿"
+    )
+
+    valid_count = max(int(return_summary["有效样本"]), 1)
+    distribution_title = (
+        f"上涨转债占比{int(return_summary['上涨']) / valid_count * 100:.2f}%，"
+        f"下跌转债占比{int(return_summary['下跌']) / valid_count * 100:.2f}%"
+    )
+    main_flow = float(main_money_flow_source["latestValue"])
+    main_flow_title = (
+        f"沪深两市主力{'净流入' if main_flow >= 0 else '净流出'}"
+        f"{abs(main_flow):.2f}亿元"
+    )
+    _, margin_title = prepare_margin_balance_plot(margin_balance)
+
+    daily_valuation_title = (
+        f"百元拟合溢价率：{float(valuation_source['latestValue']):.2f}%，"
+        f"{float(valuation_source['dailyChangePctPoint']):+.2f}pct\n"
+        f"2019年以来{float(valuation_source['percentileSince2019']):.2f}%分位数"
+    )
+    repair_history = valuation_repair.dropna(
+        subset=["交易日期", VALUATION_REPAIR_INDEX_NAME]
+    ).sort_values("交易日期")
+    if len(repair_history) < 2:
+        raise RuntimeError("长图标题缺少估值修复指数前后两个有效交易日")
+    latest_repair = float(repair_history.iloc[-1][VALUATION_REPAIR_INDEX_NAME])
+    previous_repair = float(repair_history.iloc[-2][VALUATION_REPAIR_INDEX_NAME])
+    repair_title = (
+        f"{VALUATION_REPAIR_INDEX_NAME}{latest_repair:.2f}%；"
+        f"{latest_repair - previous_repair:+.2f}pct"
+    )
+    price_parity_title = (
+        f"平均平价：{float(price_parity_source['latestParity']):.2f}，"
+        f"{float(price_parity_source['parityDailyChangePct']):+.2f}%\n"
+        f"价格中位数：{float(price_parity_source['latestMedianPrice']):.2f}，"
+        f"{float(price_parity_source['medianPriceDailyChangePct']):+.2f}%；"
+        f"2019年以来"
+        f"{float(price_parity_source['medianPricePercentileSince2019']):.2f}%分位数"
+    )
+    weighted_premium_title = build_equity_bond_weighted_titles(
+        equity_bond_weighted_source
+    )["premium"]
+    subnew_title = (
+        "次新券平均转股溢价率："
+        f"{float(subnew_bond_source['latestPremiumMeanPct']):.2f}%，"
+        f"{float(subnew_bond_source['premiumDailyChangePctPoint']):+.2f}pct"
+    )
+    close_distribution_title = (
+        "收盘价分布：\n"
+        f"破底：{float(close_price_distribution_source['latestBreakFloorPct']):.2f}%，"
+        f"{float(close_price_distribution_source['breakFloorDailyChangePctPoint']):+.2f}pct；"
+        f"破面：{float(close_price_distribution_source['latestBreakParPct']):.2f}%，"
+        f"{float(close_price_distribution_source['breakParDailyChangePctPoint']):+.2f}pct"
+    )
+
+    etf_titles: list[str] = []
+    for etf_name in ("博时可转债ETF", "海富通可转债ETF"):
+        detail = etf_share_source["funds"][etf_name]
+        latest_flow_value = detail["latestNetSubscriptionYi"]
+        latest_flow = 0.0 if latest_flow_value is None else float(latest_flow_value)
+        latest_flow_text = (
+            f"{latest_flow * 10000:+,.0f}万份"
+            if abs(latest_flow) < 1.0
+            else f"{latest_flow:+,.2f}亿份"
+        )
+        etf_titles.append(
+            f"{etf_name}：\n份额{float(detail['latestShareYi']):.2f}亿份，"
+            f"净申赎{latest_flow_text}"
+        )
+
+    titles = [
+        turnover_title,
+        distribution_title,
+        main_flow_title,
+        margin_title,
+        daily_valuation_title,
+        "盘中百元平价拟合溢价率",
+        repair_title,
+        price_parity_title,
+        weighted_premium_title,
+        group_valuation_titles["parity"],
+        maturity_title,
+        subnew_title,
+        group_valuation_titles["equity"],
+        group_valuation_titles["rating"],
+        group_valuation_titles["balance"],
+        group_valuation_titles["market_cap"],
+        group_valuation_titles["sector"],
+        close_distribution_title,
+        *etf_titles,
+        *[panel_title for _, panel_title, _ in SECTOR_MEAN_METRICS],
+    ]
+    if len(titles) != 24:
+        raise RuntimeError(f"长图图表标题数量异常：{len(titles)}")
+    return titles
+
+
+def append_long_chart_titles(commentary: str, titles: list[str]) -> str:
+    """在日报点评末尾追加可直接复制的长图标题清单。"""
+    cleaned_titles = [str(title).strip() for title in titles if str(title).strip()]
+    return (
+        commentary.rstrip()
+        + "\n\n图表标题：\n"
+        + "\n\n".join(cleaned_titles)
+    )
+
+
+def build_daily_commentary(
+    run_date: date,
+    *,
+    index_performance: pd.DataFrame,
+    turnover: pd.DataFrame,
+    main_money_flow_source: dict[str, object],
+    etf_share_source: dict[str, object],
+    price_parity_source: dict[str, object],
+    equity_bond_weighted_source: dict[str, object],
+    close_price_distribution: pd.DataFrame,
+    close_price_distribution_source: dict[str, object],
+    valuation_source: dict[str, object],
+    valuation_repair: pd.DataFrame,
+    subnew_bond_source: dict[str, object],
+    equity_bond_group_valuation_source: dict[str, object],
+    parity_group_valuation_source: dict[str, object],
+    industry_performance: pd.DataFrame,
+    sector_mean_metrics: pd.DataFrame,
+) -> str:
+    """按固定日报话术，用本次运行已经取得的数据生成点评文字。"""
+    turnover_data = turnover.copy()
+    turnover_data["交易日期"] = pd.to_datetime(
+        turnover_data["交易日期"], errors="coerce"
+    )
+    turnover_data = turnover_data.dropna(subset=["交易日期"]).sort_values(
+        "交易日期"
+    )
+    if len(turnover_data) < 2:
+        raise RuntimeError("成交额点评至少需要两个交易日")
+    turnover_latest = turnover_data.iloc[-1]
+    turnover_previous = turnover_data.iloc[-2]
+    cb_turnover = float(turnover_latest["中证转债指数成交额_亿元"])
+    stock_turnover = float(turnover_latest["沪深成交额合计_亿元"])
+    cb_turnover_change = (
+        cb_turnover / float(turnover_previous["中证转债指数成交额_亿元"]) - 1.0
+    ) * 100.0
+    stock_turnover_change = (
+        stock_turnover / float(turnover_previous["沪深成交额合计_亿元"]) - 1.0
+    ) * 100.0
+
+    index_map = {
+        str(row["指数名称"]): float(row["日涨跌幅"])
+        for _, row in index_performance.iterrows()
+        if pd.notna(row.get("指数名称")) and pd.notna(row.get("日涨跌幅"))
+    }
+    required_indices = {
+        "中证转债",
+        "上证综指",
+        "深证成指",
+        "创业板指",
+        "上证50",
+        "中证1000",
+        "大盘成长",
+        "大盘价值",
+        "中盘成长",
+        "中盘价值",
+        "小盘成长",
+        "小盘价值",
+    }
+    if not required_indices.issubset(index_map):
+        raise RuntimeError(
+            f"日报点评缺少指数：{sorted(required_indices - set(index_map))}"
+        )
+
+    volume_word = "放量" if cb_turnover_change > 0 else "缩量"
+    if abs(cb_turnover_change) <= 1e-12:
+        volume_word = "量平"
+    index_word = _commentary_direction(index_map["中证转债"])[0]
+    valuation_word = _commentary_direction(
+        float(valuation_source["dailyChangePctPoint"]),
+        positive="估值扩张",
+        negative="估值压缩",
+        zero="估值持平",
+    )[0]
+    overview = f"市场概况：转债{volume_word}{index_word}，{valuation_word}"
+
+    main_specs = (
+        ("中证转债指数", "中证转债"),
+        ("上证综指", "上证综指"),
+        ("深证成指", "深证成指"),
+        ("创业板指", "创业板指"),
+        ("上证50指数", "上证50"),
+        ("中证1000指数", "中证1000"),
+    )
+    index_text = "指数表现：" + "、".join(
+        _commentary_index_clause(label, index_map[key])
+        for label, key in main_specs
+    ) + "。"
+
+    style_names = (
+        "大盘成长",
+        "大盘价值",
+        "中盘成长",
+        "中盘价值",
+        "小盘成长",
+        "小盘价值",
+    )
+    dominant_style = max(style_names, key=lambda name: index_map[name])
+    style_text = (
+        f"市场风格：{dominant_style}相对占优。"
+        + "、".join(
+            _commentary_index_clause(name, index_map[name]) for name in style_names
+        )
+        + "。"
+    )
+
+    cb_turnover_direction, cb_turnover_magnitude = _commentary_direction(
+        cb_turnover_change, positive="增加", negative="减少"
+    )
+    stock_turnover_direction, stock_turnover_magnitude = _commentary_direction(
+        stock_turnover_change, positive="增加", negative="减少"
+    )
+    sentiment = (
+        "增强" if cb_turnover_change > 0 else "减弱" if cb_turnover_change < 0 else "平稳"
+    )
+    fund_sentences = []
+    for fund_name in ("博时可转债ETF", "海富通可转债ETF"):
+        details = etf_share_source["funds"][fund_name]
+        fund_sentences.append(
+            f"{fund_name}份额{float(details['latestShareYi']):.2f}亿份，"
+            f"净申赎{_commentary_subscription_text(float(details['latestNetSubscriptionYi']))}"
+        )
+    money_flow = float(main_money_flow_source["latestValue"])
+    money_flow_direction = "净流入" if money_flow >= 0 else "净流出"
+    funds_text = (
+        f"资金表现：转债市场成交情绪{sentiment}。"
+        f"可转债市场成交额为{cb_turnover:.2f}亿元，"
+        f"环比{cb_turnover_direction}{cb_turnover_magnitude:.2f}%；"
+        f"沪深两市总成交额为{stock_turnover:.2f}亿元，"
+        f"环比{stock_turnover_direction}{stock_turnover_magnitude:.2f}%；"
+        f"沪深两市主力{money_flow_direction}{abs(money_flow):.2f}亿元；"
+        + "，".join(fund_sentences)
+        + "。"
+    )
+
+    previous_date = pd.Timestamp(price_parity_source["previousDate"])
+    previous_date_text = f"{previous_date.month}月{previous_date.day}日"
+    weighted_close_change = float(
+        price_parity_source["weightedCloseDailyChangePct"]
+    )
+    price_center = "上升" if weighted_close_change > 0 else "下降" if weighted_close_change < 0 else "持平"
+    distribution = close_price_distribution.copy()
+    distribution["交易日期"] = pd.to_datetime(
+        distribution["交易日期"], errors="coerce"
+    )
+    distribution = distribution.dropna(subset=["交易日期"]).sort_values("交易日期")
+    if len(distribution) < 2 or "150以上" not in distribution.columns:
+        raise RuntimeError("收盘价分布点评缺少150元以上档或前一交易日")
+    high_price_latest = float(distribution.iloc[-1]["150以上"])
+    high_price_change = high_price_latest - float(distribution.iloc[-2]["150以上"])
+    high_price_word = "上升" if high_price_change > 0 else "下降" if high_price_change < 0 else "持平"
+    weighted_close_direction, weighted_close_magnitude = _commentary_direction(
+        weighted_close_change, positive="上升", negative="下降"
+    )
+    median_direction, median_magnitude = _commentary_direction(
+        float(price_parity_source["medianPriceDailyChangePct"]),
+        positive="上升",
+        negative="下降",
+    )
+    category_price_clauses = []
+    category_prices = equity_bond_weighted_source["price"]
+    for position, category in enumerate(("偏股型", "偏债型", "平衡型")):
+        details = category_prices[category]
+        direction, magnitude = _commentary_direction(
+            float(details["dailyChangePct"]), positive="上升", negative="下降"
+        )
+        prefix = "其中" if position == 0 else ""
+        category_price_clauses.append(
+            f"{prefix}{category}转债的收盘价为{float(details['latestValue']):.2f}元，"
+            f"环比{direction}{magnitude:.2f}%"
+        )
+    price_text = (
+        f"转债价格：转债中枢{price_center}，高价券占比{high_price_word}。"
+        f"转债整体收盘价加权平均值为{float(price_parity_source['latestWeightedClose']):.2f}元，"
+        f"环比{previous_date_text}{weighted_close_direction}{weighted_close_magnitude:.2f}%。"
+        + "；".join(category_price_clauses)
+        + "。"
+        f"从转债收盘价分布情况看，150元以上高价券个数占比{high_price_latest:.2f}%，"
+        f"较{previous_date_text}环比{high_price_change:+.2f}pct；"
+        f"价格中位数为{float(price_parity_source['latestMedianPrice']):.2f}元，"
+        f"环比{previous_date_text}{median_direction}{median_magnitude:.2f}%；"
+        f"破底占比为{float(close_price_distribution_source['latestBreakFloorPct']):.2f}%，"
+        f"环比{float(close_price_distribution_source['breakFloorDailyChangePctPoint']):+.2f}pct。"
+    )
+
+    repair = valuation_repair[["交易日期", VALUATION_REPAIR_INDEX_NAME]].copy()
+    repair["交易日期"] = pd.to_datetime(repair["交易日期"], errors="coerce")
+    repair[VALUATION_REPAIR_INDEX_NAME] = pd.to_numeric(
+        repair[VALUATION_REPAIR_INDEX_NAME], errors="coerce"
+    )
+    repair = repair.dropna().sort_values("交易日期")
+    if len(repair) < 2:
+        raise RuntimeError("转债估值修复指数点评至少需要两个交易日")
+    repair_latest = float(repair.iloc[-1][VALUATION_REPAIR_INDEX_NAME])
+    repair_change = repair_latest - float(repair.iloc[-2][VALUATION_REPAIR_INDEX_NAME])
+    valuation_change = float(valuation_source["dailyChangePctPoint"])
+    valuation_summary = "估值扩张" if valuation_change > 0 else "估值压缩" if valuation_change < 0 else "估值持平"
+    fitted_clauses = []
+    fitted_details = equity_bond_group_valuation_source["groupDetails"]
+    for category in ("偏股型", "偏债型", "平衡型"):
+        details = fitted_details[category]
+        direction, magnitude = _commentary_direction(
+            float(details["dailyChangePctPoint"])
+        )
+        fitted_clauses.append(
+            f"{category}拟合溢价率为{float(details['latestValue']):.2f}%，"
+            f"环比{direction}{magnitude:.2f}pct"
+        )
+    parity_clauses = []
+    parity_details = parity_group_valuation_source["groupDetails"]
+    for group in ("110-130", "90-110", "70-90"):
+        details = parity_details[group]
+        direction, magnitude = _commentary_direction(
+            float(details["dailyChangePctPoint"])
+        )
+        parity_clauses.append(
+            f"平价{group}转债拟合溢价率为{float(details['latestValue']):.2f}%，"
+            f"环比{direction}{magnitude:.2f}pct"
+        )
+    valuation_text = (
+        f"转债估值：{valuation_summary}。"
+        f"百元平价拟合转股溢价率为{float(valuation_source['latestValue']):.2f}%，"
+        f"环比{previous_date_text}{_commentary_direction(valuation_change)[0]}"
+        f"{abs(valuation_change):.2f}pct；"
+        f"转债估值修复指数{repair_latest:.2f}%；{repair_change:+.2f}pct；"
+        f"次新券平均转股溢价率为{float(subnew_bond_source['latestPremiumMeanPct']):.2f}%，"
+        f"{float(subnew_bond_source['premiumDailyChangePctPoint']):+.2f}pct。"
+        f"整体加权平价为{float(price_parity_source['latestParity']):.2f}元，"
+        f"环比{previous_date_text}{_commentary_direction(float(price_parity_source['parityDailyChangePct']), positive='上升', negative='下降')[0]}"
+        f"{abs(float(price_parity_source['parityDailyChangePct'])):.2f}%。"
+        f"分类别来看，{'；'.join(fitted_clauses)}。"
+        + "；".join(parity_clauses)
+        + "。"
+    )
+
+    stock_up, stock_down, stock_gainers, stock_decliners = (
+        _commentary_ranked_industries(industry_performance, "正股日涨跌幅")
+    )
+    bond_up, bond_down, bond_gainers, bond_decliners = (
+        _commentary_ranked_industries(industry_performance, "转债日涨跌幅")
+    )
+    stock_breadth = "上涨占比过半" if stock_up > stock_down else "上涨占比未过半"
+    industry_date_text = f"{run_date.month}月{run_date.day}日"
+    industry_text = (
+        f"行业表现：{industry_date_text}正股行业指数{stock_breadth}，"
+        f"共计{stock_up}个行业上涨。A股市场中，涨幅前三位行业为{stock_gainers}；"
+        f"跌幅前三位行业为{stock_decliners}。\n"
+        f"转债市场共计{bond_down}个行业下跌，跌幅前三位行业为{bond_decliners}；"
+        f"涨幅前三位行业为{bond_gainers}。"
+    )
+
+    sector_lines = (
+        "(1) 收盘价："
+        + _commentary_sector_change_line(
+            sector_mean_metrics, "收盘价", percentage_point=False
+        ),
+        "(2) 转股溢价率："
+        + _commentary_sector_change_line(
+            sector_mean_metrics, "转股溢价率", percentage_point=True
+        ),
+        "(3) 转换价值："
+        + _commentary_sector_change_line(
+            sector_mean_metrics, "平价", percentage_point=False
+        ),
+        "(4) 纯债溢价率："
+        + _commentary_sector_change_line(
+            sector_mean_metrics, "纯债溢价率", percentage_point=True
+        ),
+    )
+    return "\n".join(
+        (
+            overview,
+            index_text,
+            style_text,
+            funds_text,
+            price_text,
+            valuation_text,
+            industry_text,
+            *sector_lines,
+        )
+    )
+
+
+def write_daily_commentary(text: str, output_path: Path) -> None:
+    """以 UTF-8 原子写入日报点评文本。"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_output = output_path.with_name(
+        f".{output_path.stem}.{os.getpid()}.tmp{output_path.suffix}"
+    )
+    try:
+        temporary_output.write_text(text.rstrip() + "\n", encoding="utf-8")
+        os.replace(temporary_output, output_path)
+    finally:
+        if temporary_output.exists():
+            temporary_output.unlink()
 
 
 def remove_obsolete_outputs(output_dir: Path, workbook_path: Path) -> None:
@@ -5575,33 +8623,52 @@ def remove_obsolete_outputs(output_dir: Path, workbook_path: Path) -> None:
         "上证指数与深证成指成交额.png",
         "可转债上涨下跌占比.png",
         "次新券相对上市涨跌幅均值.png",
+        "股债性分类均价.png",
+        "07_平价分类拟合溢价率.png",
+        "10_转债估值修复指数.png",
     ):
         path = output_dir / name
         if path.is_file():
             path.unlink()
 
 
-def run(run_date: date, output_dir: Path) -> dict[str, object]:
+def run(
+    run_date: date,
+    output_dir: Path,
+    progress: Optional[ConsoleProgress] = None,
+) -> dict[str, object]:
+    def report_progress(percent: int, message: str) -> None:
+        if progress is not None:
+            progress.update(percent, message)
+
     start_date = same_day_last_year(run_date)
     market_start_date = MARGIN_BALANCE_START_DATE
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    report_progress(2, "登录 iFinD")
     login_code = ths_login()
     if not is_ths_login_ok(login_code):
         raise RuntimeError(
             f"iFinD 登录失败（{login_code}）：{ths_login_errmsg(login_code)}"
         )
 
+    report_progress(6, "读取资金数据")
     market = fetch_market_statistics(market_start_date, run_date)
     main_money_flow, main_money_flow_source = fetch_main_money_flow(run_date)
     etf_share, etf_share_source = fetch_cb_etf_share_series(run_date)
+    report_progress(16, "读取市场表现")
     index = fetch_index_turnover(start_date, run_date)
     index_performance, index_performance_source = fetch_index_performance(run_date)
     return_details, return_distribution, return_summary, return_source = (
         fetch_cb_daily_returns(run_date)
     )
+    report_progress(27, "读取估值数据")
     daily_valuation, valuation_source = fetch_daily_valuation_series(run_date)
+    valuation_repair = fetch_valuation_repair_index(run_date)
     intraday_valuation, intraday_valuation_source = fetch_intraday_valuation(run_date)
+    parity_interval_premium, parity_interval_premium_source = (
+        fetch_parity_interval_premium_series(run_date)
+    )
     parity_group_valuation, parity_group_valuation_source = (
         fetch_parity_group_valuation_series(run_date)
     )
@@ -5623,12 +8690,21 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
     sector_group_valuation, sector_group_valuation_source = (
         fetch_sector_group_valuation_series(run_date)
     )
+    report_progress(43, "读取行业与分布数据")
     sector_mean_metrics, sector_mean_source = fetch_sector_mean_metrics(run_date)
+    industry_history_metrics = fetch_industry_history_metrics(run_date)
+    industry_performance, industry_performance_source = (
+        fetch_industry_market_table(run_date)
+    )
     close_price_distribution, close_price_distribution_source = (
         fetch_close_price_distribution_series(run_date)
     )
     price_parity, price_parity_source = fetch_price_parity_series(run_date)
+    equity_bond_weighted, equity_bond_weighted_source = (
+        fetch_equity_bond_weighted_series(run_date)
+    )
     subnew_bond, subnew_bond_source = fetch_subnew_bond_series(run_date)
+    report_progress(55, "数据读取完成")
 
     market_png = output_dir / "沪深两市融资融券余额.png"
     main_money_flow_png = output_dir / "沪深两市主力净流入.png"
@@ -5641,6 +8717,8 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
     intraday_valuation_png = output_dir / "盘中百元平价拟合溢价率.png"
     parity_group_valuation_png = output_dir / "分平价多因子修正拟合溢价率.png"
     price_parity_png = output_dir / "余额加权平价与收盘价中位数.png"
+    equity_bond_weighted_premium_png = output_dir / "股债性分类转股溢价率.png"
+    valuation_repair_png = output_dir / "转债估值修复指数.png"
     maturity_group_png = output_dir / "分剩余期限拟合溢价率.png"
     subnew_premium_png = output_dir / "次新券平均转股溢价率.png"
     equity_bond_group_png = output_dir / "股债型拟合溢价率.png"
@@ -5653,9 +8731,14 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
     sector_mean_parity_png = output_dir / "各行业平均平价.png"
     sector_mean_conversion_premium_png = output_dir / "各行业平均转股溢价率.png"
     sector_mean_bond_premium_png = output_dir / "各行业平均纯债溢价率.png"
+    industry_performance_png = output_dir / "各行业转债正股涨跌幅及估值.png"
     overview_png = output_dir / "主要指数与市场表现组合图.png"
+    fuguo_daily_png = output_dir / "富国日报.png"
     workbook_path = output_dir / f"转债日报市场数据底稿_{run_date:%Y%m%d}.xlsx"
+    commentary_path = output_dir / f"转债日报点评_{run_date:%Y%m%d}.txt"
+    fuguo_daily_text_path = output_dir / "富国日报.txt"
 
+    report_progress(57, "绘制市场图表")
     font = setup_font()
     plot_market_statistics(market, market_png, font)
     plot_main_money_flow(main_money_flow, main_money_flow_source, main_money_flow_png)
@@ -5672,6 +8755,7 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
     plot_index_performance_table(
         index_performance, run_date, index_performance_png, font
     )
+    report_progress(65, "绘制估值图表")
     plot_daily_valuation(daily_valuation, valuation_source, daily_valuation_png)
     previous_date = pd.Timestamp(valuation_source["previousDate"])
     plot_intraday_valuation(
@@ -5680,12 +8764,29 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         float(valuation_source["previousValue"]),
         intraday_valuation_png,
     )
+    group_valuation_titles = build_group_valuation_titles(
+        {
+            "parity": parity_group_valuation_source,
+            "equity": equity_bond_group_valuation_source["groupDetails"],
+            "rating": rating_group_valuation_source["groupDetails"],
+            "balance": balance_group_valuation_source["groupDetails"],
+            "market_cap": market_cap_group_valuation_source["groupDetails"],
+            "sector": sector_group_valuation_source["groupDetails"],
+        }
+    )
     plot_parity_group_valuation(
         parity_group_valuation,
         parity_group_valuation_source,
         parity_group_valuation_png,
+        panel_title=group_valuation_titles["parity"],
     )
     plot_price_parity_series(price_parity, price_parity_source, price_parity_png)
+    plot_equity_bond_weighted_premium(
+        equity_bond_weighted,
+        equity_bond_weighted_source,
+        equity_bond_weighted_premium_png,
+    )
+    plot_valuation_repair_index(valuation_repair, valuation_repair_png)
     maturity_details = maturity_group_valuation_source["groupDetails"]
     maturity_title = (
         "分剩余期限拟合溢价率：\n"
@@ -5710,74 +8811,34 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         output_path=subnew_premium_png,
         include_zero=False,
     )
-    equity_details = equity_bond_group_valuation_source["groupDetails"]
-    equity_title = (
-        "股债性分类转股溢价率\n"
-        f"偏股型：{float(equity_details['偏股型']['latestValue']):.2f}%，"
-        f"{float(equity_details['偏股型']['dailyChangePctPoint']):+.2f}pct；"
-        f"偏债型：{float(equity_details['偏债型']['latestValue']):.2f}%，"
-        f"{float(equity_details['偏债型']['dailyChangePctPoint']):+.2f}pct"
-    )
     plot_classification_valuation(
         equity_bond_group_valuation,
         EQUITY_BOND_GROUP_SPECS,
-        equity_title,
+        group_valuation_titles["equity"],
         equity_bond_group_png,
-    )
-    rating_details = rating_group_valuation_source["groupDetails"]
-    rating_title = (
-        "评级分类转股溢价率\n"
-        f"AAA/AA+：{float(rating_details['AAA/AA+']['latestValue']):.2f}%，"
-        f"{float(rating_details['AAA/AA+']['dailyChangePctPoint']):+.2f}pct；"
-        f"AA/AA-：{float(rating_details['AA/AA-']['latestValue']):.2f}%，"
-        f"{float(rating_details['AA/AA-']['dailyChangePctPoint']):+.2f}pct"
     )
     plot_classification_valuation(
         rating_group_valuation,
         RATING_GROUP_SPECS,
-        rating_title,
+        group_valuation_titles["rating"],
         rating_group_png,
-    )
-    balance_details = balance_group_valuation_source["groupDetails"]
-    balance_title = (
-        "余额分类转股溢价率：\n"
-        f"0-3：{float(balance_details['0-3']['latestValue']):.2f}%，"
-        f"{float(balance_details['0-3']['dailyChangePctPoint']):+.2f}pct；"
-        f"50+：{float(balance_details['50+']['latestValue']):.2f}%，"
-        f"{float(balance_details['50+']['dailyChangePctPoint']):+.2f}pct"
     )
     plot_classification_valuation(
         balance_group_valuation,
         BALANCE_GROUP_SPECS,
-        balance_title,
+        group_valuation_titles["balance"],
         balance_group_png,
-    )
-    market_cap_details = market_cap_group_valuation_source["groupDetails"]
-    market_cap_title = (
-        "市值分类转股溢价率：\n"
-        f"0-50：{float(market_cap_details['0-50']['latestValue']):.2f}%，"
-        f"{float(market_cap_details['0-50']['dailyChangePctPoint']):+.2f}pct；"
-        f"300+：{float(market_cap_details['300+']['latestValue']):.2f}%，"
-        f"{float(market_cap_details['300+']['dailyChangePctPoint']):+.2f}pct"
     )
     plot_classification_valuation(
         market_cap_group_valuation,
         MARKET_CAP_GROUP_SPECS,
-        market_cap_title,
+        group_valuation_titles["market_cap"],
         market_cap_group_png,
-    )
-    sector_details = sector_group_valuation_source["groupDetails"]
-    sector_title = (
-        "各板块转股溢价率：\n"
-        f"科技：{float(sector_details['科技']['latestValue']):.2f}%，"
-        f"{float(sector_details['科技']['dailyChangePctPoint']):+.2f}pct；"
-        f"周期：{float(sector_details['周期']['latestValue']):.2f}%，"
-        f"{float(sector_details['周期']['dailyChangePctPoint']):+.2f}pct"
     )
     plot_classification_valuation(
         sector_group_valuation,
         SECTOR_GROUP_SPECS,
-        sector_title,
+        group_valuation_titles["sector"],
         sector_group_png,
     )
     plot_close_price_distribution_area(
@@ -5785,6 +8846,7 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         close_price_distribution_source,
         close_price_distribution_png,
     )
+    report_progress(76, "绘制行业图表")
     for metric, panel_title, unit_suffix in SECTOR_MEAN_METRICS:
         output_path = {
             "收盘价": sector_mean_close_png,
@@ -5799,6 +8861,8 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
             unit_suffix,
             output_path,
         )
+    plot_industry_market_table(industry_performance, industry_performance_png)
+    report_progress(84, "合成长图")
     compose_index_market_overview(
         index_performance_png,
         index_png,
@@ -5809,6 +8873,8 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         intraday_valuation_png,
         parity_group_valuation_png,
         price_parity_png,
+        equity_bond_weighted_premium_png,
+        valuation_repair_png,
         maturity_group_png,
         subnew_premium_png,
         equity_bond_group_png,
@@ -5823,9 +8889,22 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         sector_mean_parity_png,
         sector_mean_conversion_premium_png,
         sector_mean_bond_premium_png,
+        industry_performance_png,
         overview_png,
         run_date,
     )
+    compose_fuguo_daily_report(
+        daily_valuation_png,
+        intraday_valuation_png,
+        valuation_repair_png,
+        price_parity_png,
+        parity_group_valuation_png,
+        equity_bond_weighted_premium_png,
+        fuguo_daily_png,
+    )
+    report_progress(88, "整理独立小图")
+    export_numbered_titleless_small_charts(output_dir)
+    report_progress(90, "生成 Excel 底稿")
     build_workbook(
         market,
         main_money_flow,
@@ -5841,8 +8920,10 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         return_source,
         daily_valuation,
         valuation_source,
+        valuation_repair,
         intraday_valuation,
         intraday_valuation_source,
+        parity_interval_premium,
         parity_group_valuation,
         parity_group_valuation_source,
         equity_bond_group_valuation,
@@ -5859,10 +8940,15 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         sector_group_valuation_source,
         sector_mean_metrics,
         sector_mean_source,
+        industry_history_metrics,
+        industry_performance,
+        industry_performance_source,
         close_price_distribution,
         close_price_distribution_source,
         price_parity,
         price_parity_source,
+        equity_bond_weighted,
+        equity_bond_weighted_source,
         subnew_bond,
         subnew_bond_source,
         run_date,
@@ -5870,6 +8956,51 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         market_start_date,
         workbook_path,
     )
+    report_progress(96, "生成点评文本")
+    commentary = build_daily_commentary(
+        run_date,
+        index_performance=index_performance,
+        turnover=index,
+        main_money_flow_source=main_money_flow_source,
+        etf_share_source=etf_share_source,
+        price_parity_source=price_parity_source,
+        equity_bond_weighted_source=equity_bond_weighted_source,
+        close_price_distribution=close_price_distribution,
+        close_price_distribution_source=close_price_distribution_source,
+        valuation_source=valuation_source,
+        valuation_repair=valuation_repair,
+        subnew_bond_source=subnew_bond_source,
+        equity_bond_group_valuation_source=equity_bond_group_valuation_source,
+        parity_group_valuation_source=parity_group_valuation_source,
+        industry_performance=industry_performance,
+        sector_mean_metrics=sector_mean_metrics,
+    )
+    long_chart_titles = build_long_chart_titles(
+        turnover=index,
+        return_summary=return_summary,
+        main_money_flow_source=main_money_flow_source,
+        margin_balance=market,
+        valuation_source=valuation_source,
+        valuation_repair=valuation_repair,
+        price_parity_source=price_parity_source,
+        equity_bond_weighted_source=equity_bond_weighted_source,
+        group_valuation_titles=group_valuation_titles,
+        maturity_title=maturity_title,
+        subnew_bond_source=subnew_bond_source,
+        close_price_distribution_source=close_price_distribution_source,
+        etf_share_source=etf_share_source,
+    )
+    commentary = append_long_chart_titles(commentary, long_chart_titles)
+    write_daily_commentary(commentary, commentary_path)
+    fuguo_daily_text = build_fuguo_daily_text(
+        run_date,
+        index_performance=index_performance,
+        turnover=index,
+        price_parity_source=price_parity_source,
+        valuation_source=valuation_source,
+    )
+    write_daily_commentary(fuguo_daily_text, fuguo_daily_text_path)
+    report_progress(98, "整理输出文件")
     remove_obsolete_outputs(output_dir, workbook_path)
 
     metadata: dict[str, object] = {
@@ -5930,6 +9061,13 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         ),
         "平价分类溢价率数据源": parity_group_valuation_source["parquet"],
         "平价分类溢价率读取规则": parity_group_valuation_source["readRule"],
+        "分平价区间转股溢价率数据源": parity_interval_premium_source[
+            "parquetRoot"
+        ],
+        "分平价区间转股溢价率口径": parity_interval_premium_source[
+            "sampleRule"
+        ],
+        "分平价区间转股溢价率记录数": len(parity_interval_premium),
         "平价分类溢价率当日变动绝对值最大组别": parity_group_valuation_source[
             "largestChangeGroup"
         ],
@@ -6020,6 +9158,21 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         "行业板块映射规则": sector_mean_source["sectorRule"],
         "行业均值样本口径": sector_mean_source["sampleRule"],
         "行业均值记录数": len(sector_mean_metrics),
+        "行业涨跌与估值记录数": len(industry_performance),
+        "行业正股涨跌幅数据源": industry_performance_source["equity"]["source"],
+        "行业正股涨跌幅函数": industry_performance_source["equity"][
+            "returnFunctions"
+        ],
+        "行业正股估值函数": industry_performance_source["equity"][
+            "valuationFunctions"
+        ],
+        "行业转债涨跌幅数据源": industry_performance_source["convertibleBond"][
+            "parquetRoot"
+        ],
+        "行业转债涨跌幅口径": industry_performance_source["convertibleBond"][
+            "returnRule"
+        ],
+        "行业涨跌与估值排序规则": industry_performance_source["sortRule"],
         "收盘价分布数据源": close_price_distribution_source["parquetRoot"],
         "收盘价分布样本口径": close_price_distribution_source["sampleRule"],
         "破底占比": close_price_distribution_source["latestBreakFloorPct"],
@@ -6032,6 +9185,10 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         ],
         "平均平价": price_parity_source["latestParity"],
         "平均平价日变动_pct": price_parity_source["parityDailyChangePct"],
+        "整体余额加权收盘价": price_parity_source["latestWeightedClose"],
+        "整体余额加权收盘价日变动_pct": price_parity_source[
+            "weightedCloseDailyChangePct"
+        ],
         "价格中位数": price_parity_source["latestMedianPrice"],
         "价格中位数日变动_pct": price_parity_source[
             "medianPriceDailyChangePct"
@@ -6040,6 +9197,32 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
             "medianPricePercentileSince2019"
         ],
         "价格与平价数据源": price_parity_source["parquetRoot"],
+        "股债性分类余额加权数据源": equity_bond_weighted_source["parquetRoot"],
+        "股债性分类余额加权口径": equity_bond_weighted_source["sampleRule"],
+        "偏股型余额加权转股溢价率": equity_bond_weighted_source["premium"][
+            "偏股型"
+        ]["latestValue"],
+        "偏股型余额加权转股溢价率日变动_pct": equity_bond_weighted_source[
+            "premium"
+        ]["偏股型"]["dailyChangePctPoint"],
+        "偏债型余额加权转股溢价率": equity_bond_weighted_source["premium"][
+            "偏债型"
+        ]["latestValue"],
+        "偏债型余额加权转股溢价率日变动_pct": equity_bond_weighted_source[
+            "premium"
+        ]["偏债型"]["dailyChangePctPoint"],
+        "偏股型余额加权均价": equity_bond_weighted_source["price"]["偏股型"][
+            "latestValue"
+        ],
+        "偏股型余额加权均价日变动_pct": equity_bond_weighted_source["price"][
+            "偏股型"
+        ]["dailyChangePct"],
+        "偏债型余额加权均价": equity_bond_weighted_source["price"]["偏债型"][
+            "latestValue"
+        ],
+        "偏债型余额加权均价日变动_pct": equity_bond_weighted_source["price"][
+            "偏债型"
+        ]["dailyChangePct"],
         "次新券数据源": subnew_bond_source["parquetRoot"],
         "次新券样本口径": subnew_bond_source["sampleRule"],
         "次新券相对上市涨跌幅均值": subnew_bond_source[
@@ -6057,6 +9240,9 @@ def run(run_date: date, output_dir: Path) -> dict[str, object]:
         "报告字体": font.get_name(),
         "报告配色": {"红": RED, "蓝": BLUE},
         "Excel底稿": str(workbook_path),
+        "日报点评": str(commentary_path),
+        "富国日报图片": str(fuguo_daily_png),
+        "富国日报点评": str(fuguo_daily_text_path),
     }
     return metadata
 
@@ -6079,16 +9265,21 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    run_date = (
-        datetime.strptime(args.run_date, "%Y-%m-%d").date()
-        if args.run_date
-        else latest_cb_trade_date()
-    )
-    output_dir = args.output_dir or (
-        WORKSPACE / "runs" / "daily" / f"{run_date:%Y%m%d}_转债日报"
-    )
-    metadata = run(run_date, output_dir.resolve())
-    print(json.dumps(metadata, ensure_ascii=False, indent=2))
+    progress = ConsoleProgress()
+    try:
+        run_date = (
+            datetime.strptime(args.run_date, "%Y-%m-%d").date()
+            if args.run_date
+            else latest_cb_trade_date()
+        )
+        output_dir = args.output_dir or (
+            WORKSPACE / "runs" / "daily" / f"{run_date:%Y%m%d}_转债日报"
+        )
+        run(run_date, output_dir.resolve(), progress=progress)
+    except Exception:
+        progress.fail()
+        raise
+    progress.finish(f"完成：{output_dir.name}")
 
 
 if __name__ == "__main__":

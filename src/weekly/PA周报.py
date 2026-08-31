@@ -7,8 +7,10 @@ PA 周报一键生成脚本（纯 Python 单文件版）。
 本脚本不再调用外部 py 或 JS 文件。它会直接完成：
 1. 读取「转债个券历史序列」parquet 数据；
 2. 自动识别最新交易日；
-3. 计算 1.1、1.3、1.4、1.5、1.6、1.7；
-4. 用 openpyxl 直接生成 Excel 工作簿。
+3. 缺失时打开Excel执行工作簿自带的Wind EDB信用债数据抓取；
+4. 通过 iFinD 自动补齐1.1的转债指数和全市场成交额；
+5. 计算 1.1、1.3、1.4、1.5、1.6、1.7、1.11及2.1；
+6. 用 openpyxl 直接生成 Excel 工作簿。
 
 输出：
     PA周报YYYYMMDD/PA转债周度数据.xlsx
@@ -26,6 +28,7 @@ import tempfile
 import time
 import zipfile
 from copy import deepcopy
+from configparser import ConfigParser
 from datetime import datetime
 from pathlib import Path
 
@@ -49,6 +52,7 @@ from 转债Parquet标准读写模块 import BOND_CODE, INDEX_NAME, INDEX_VALUE, 
 
 ROOT = Path(__file__).resolve().parents[2]
 PARQUET_ROOT = ROOT / "data/转债个券历史序列"
+IFIND_CREDENTIAL_FILE = ROOT / "private/ifind账号.txt"
 PA_WORKBOOK_NAME = "PA转债周度数据.xlsx"
 
 
@@ -90,6 +94,8 @@ META_JSON = OUT / "meta.json"
 START_DATE = pd.Timestamp("2017-01-01")
 DECOMP_START_DATE = pd.Timestamp("2018-01-01")
 ROLLING_WINDOW = 20
+CREDIT_REFRESH_TIMEOUT_SECONDS = 180
+WEEKLY_MOVER_COUNT = 20
 
 MARKET_COLUMNS = [
     "日期",
@@ -445,6 +451,145 @@ def load_3y_aa_credit_yields(workbook_path: Path) -> pd.Series:
     return load_3y_credit_yields(workbook_path)["AA"]
 
 
+def _excel_date(value: object) -> pd.Timestamp | None:
+    """将 Excel COM 返回的日期序列值或日期文本转换为 Timestamp。"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (
+            pd.Timestamp("1899-12-30")
+            + pd.to_timedelta(float(value), unit="D")
+        ).normalize()
+    parsed = pd.to_datetime(value, errors="coerce")
+    return pd.Timestamp(parsed).normalize() if pd.notna(parsed) else None
+
+
+def refresh_3y_credit_yields_via_excel(
+    workbook_path: Path,
+    expected_latest_date: pd.Timestamp,
+    timeout_seconds: int = CREDIT_REFRESH_TIMEOUT_SECONDS,
+) -> None:
+    """打开 Excel 运行工作簿自带的 Wind EDB 抓取，并保存刷新结果。"""
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError("缺少pywin32，无法自动刷新3年AA信用债数据") from exc
+
+    excel = None
+    workbook = None
+    pythoncom.CoInitialize()
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        excel.AskToUpdateLinks = True
+        excel.ScreenUpdating = False
+        try:
+            workbook = excel.Workbooks.Open(
+                str(workbook_path.resolve()),
+                UpdateLinks=3,
+                ReadOnly=False,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"无法用Excel打开PA工作簿，请确认文件未被占用：{workbook_path}"
+            ) from exc
+        if bool(workbook.ReadOnly):
+            raise RuntimeError(
+                f"PA工作簿以只读方式打开，无法保存信用债刷新结果；请先关闭Excel：{workbook_path}"
+            )
+
+        try:
+            sheet = workbook.Worksheets("3年AA信用债")
+        except Exception:
+            try:
+                sheet = workbook.Worksheets("Sheet1")
+            except Exception as exc:
+                raise KeyError("PA工作簿缺少3年AA信用债 Sheet") from exc
+
+        # A1 的 =edb() 由 WindFunc.xla 提供；UpdateLinks、RefreshAll 和全量重算
+        # 共同触发其自带数据抓取。A3:H3 是倒序序列的最新一期。
+        workbook.RefreshAll()
+        excel.CalculateFullRebuild()
+        try:
+            excel.CalculateUntilAsyncQueriesDone()
+        except Exception:
+            pass
+
+        deadline = time.monotonic() + timeout_seconds
+        latest_date: pd.Timestamp | None = None
+        latest_values: tuple[object, ...] = ()
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            try:
+                excel.CalculateUntilAsyncQueriesDone()
+            except Exception:
+                pass
+            latest_date = _excel_date(sheet.Range("A3").Value2)
+            raw_values = sheet.Range("B3:H3").Value2
+            if isinstance(raw_values, tuple) and raw_values:
+                first_row = raw_values[0] if isinstance(raw_values[0], tuple) else raw_values
+                latest_values = tuple(first_row)
+            else:
+                latest_values = ()
+            numeric_complete = len(latest_values) == len(RATING_BUCKETS) and all(
+                pd.notna(pd.to_numeric(value, errors="coerce"))
+                for value in latest_values
+            )
+            if (
+                latest_date is not None
+                and latest_date >= pd.Timestamp(expected_latest_date).normalize()
+                and numeric_complete
+                and int(excel.CalculationState) == 0
+            ):
+                workbook.Save()
+                log(f"3年AA信用债数据已通过Excel/Wind刷新至：{latest_date:%Y-%m-%d}")
+                return
+
+        latest_text = latest_date.strftime("%Y-%m-%d") if latest_date is not None else "无有效日期"
+        raise TimeoutError(
+            "Excel/Wind刷新3年AA信用债数据超时："
+            f"期望截至{pd.Timestamp(expected_latest_date):%Y-%m-%d}，实际截至{latest_text}。"
+            "请确认Wind插件已登录且工作簿外部链接可用。"
+        )
+    finally:
+        if workbook is not None:
+            try:
+                workbook.Close(SaveChanges=False)
+            except Exception:
+                pass
+        if excel is not None:
+            try:
+                excel.Quit()
+            except Exception:
+                pass
+        pythoncom.CoUninitialize()
+
+
+def ensure_3y_credit_yields_current(
+    workbook_path: Path,
+    required_dates: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """信用债序列未覆盖所需交易日时，先调用Excel自带抓取再重新读取。"""
+    required = pd.DatetimeIndex(required_dates).normalize().unique().sort_values()
+    credit_yields = load_3y_credit_yields(workbook_path)
+    complete_dates = credit_yields.dropna(subset=RATING_BUCKETS).index
+    missing = required.difference(complete_dates)
+    if missing.empty:
+        return credit_yields
+
+    log(
+        "3年AA信用债数据未更新，启动Excel执行工作簿自带Wind EDB抓取："
+        f"缺少{len(missing)}个交易日，最新缺失日{missing.max():%Y-%m-%d}"
+    )
+    refresh_3y_credit_yields_via_excel(workbook_path, missing.max())
+    refreshed = load_3y_credit_yields(workbook_path)
+    still_missing = required.difference(refreshed.dropna(subset=RATING_BUCKETS).index)
+    if not still_missing.empty:
+        missing_text = ", ".join(value.strftime("%Y-%m-%d") for value in still_missing[:10])
+        raise RuntimeError(f"Excel/Wind刷新后3年AA信用债仍缺少：{missing_text}")
+    return refreshed
+
+
 def load_11_index_and_turnover_values(workbook_path: Path) -> pd.DataFrame:
     """读取1.1中iFinD公式已缓存的转债指数和全市场成交额数值。"""
     if not workbook_path.exists():
@@ -489,13 +634,128 @@ def load_11_index_and_turnover_values(workbook_path: Path) -> pd.DataFrame:
     return values.drop_duplicates("日期", keep="last").set_index("日期").sort_index()
 
 
-def load_master() -> tuple[pd.Series, pd.Series, pd.Series]:
+def load_ifind_credentials() -> tuple[str, str]:
+    """读取项目统一的 iFinD 登录账号，不在日志中输出凭据。"""
+    if not IFIND_CREDENTIAL_FILE.is_file():
+        raise FileNotFoundError(f"未找到iFinD账号文件：{IFIND_CREDENTIAL_FILE}")
+    config = ConfigParser(interpolation=None)
+    config.read(IFIND_CREDENTIAL_FILE, encoding="utf-8")
+    username = config.get("ifind", "username", fallback="").strip()
+    password = config.get("ifind", "password", fallback="").strip()
+    if not username or not password:
+        raise RuntimeError("ifind账号.txt中的[ifind] username或password为空")
+    return username, password
+
+
+def _ifind_error_message(module: object, code: int) -> str:
+    try:
+        detail = module.THS_GetErrorInfo(code)
+        if isinstance(detail, dict):
+            return str(detail.get("errmsg", detail))
+        return str(detail)
+    except Exception:
+        return f"状态码 {code}"
+
+
+def fetch_11_index_and_turnover_values(
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+) -> pd.DataFrame:
+    """用 iFinD API 获取中证转债指数及全市场成交额，结果单位与1.1一致。"""
+    try:
+        import iFinDPy as ifind
+    except ImportError as exc:
+        raise RuntimeError("未安装iFinDPy，无法自动补齐1.1的iFinD数据") from exc
+
+    username, password = load_ifind_credentials()
+    login_code = int(ifind.THS_iFinDLogin(username, password))
+    if login_code not in (0, -201):
+        raise RuntimeError(
+            "iFinD登录失败："
+            f"{_ifind_error_message(ifind, login_code)}（状态码 {login_code}）"
+        )
+    owns_login = login_code == 0
+    try:
+        result = ifind.THS_DS(
+            "000832.CSI",
+            "ths_close_price_index;ths_amt_nd_index",
+            ";",
+            "block:history",
+            f"{pd.Timestamp(start_date):%Y-%m-%d}",
+            f"{pd.Timestamp(end_date):%Y-%m-%d}",
+        )
+        error_code = getattr(result, "errorcode", None)
+        if error_code not in (None, 0):
+            detail = getattr(result, "errmsg", "") or _ifind_error_message(ifind, int(error_code))
+            raise RuntimeError(f"iFinD获取1.1指标失败：{detail}（状态码 {error_code}）")
+        raw = getattr(result, "data", None)
+        required_columns = {"time", "ths_close_price_index", "ths_amt_nd_index"}
+        if raw is None or raw.empty:
+            raise RuntimeError("iFinD未返回1.1的转债指数和全市场成交额")
+        if not required_columns.issubset(raw.columns):
+            raise RuntimeError(f"iFinD返回1.1字段异常：{raw.columns.tolist()}")
+
+        values = raw.rename(
+            columns={
+                "time": "日期",
+                "ths_close_price_index": "转债指数",
+                "ths_amt_nd_index": "全市场成交额",
+            }
+        )[["日期", "转债指数", "全市场成交额"]].copy()
+        values["日期"] = pd.to_datetime(values["日期"], errors="coerce").dt.normalize()
+        values["转债指数"] = pd.to_numeric(values["转债指数"], errors="coerce")
+        values["全市场成交额"] = (
+            pd.to_numeric(values["全市场成交额"], errors="coerce") / 100_000_000.0
+        )
+        values = values.dropna(subset=["日期", "转债指数", "全市场成交额"])
+        return values.drop_duplicates("日期", keep="last").set_index("日期").sort_index()
+    finally:
+        if owns_login:
+            try:
+                ifind.THS_iFinDLogout()
+            except Exception:
+                pass
+
+
+def ensure_11_index_and_turnover_values(
+    workbook_path: Path,
+    required_dates: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """复用工作簿历史值，并通过 iFinD 自动补齐1.1缺失交易日。"""
+    cached = load_11_index_and_turnover_values(workbook_path)
+    required = pd.DatetimeIndex(required_dates).normalize().unique().sort_values()
+    complete_cached = cached.dropna(subset=["转债指数", "全市场成交额"])
+    missing = required.difference(complete_cached.index)
+    if missing.empty:
+        return cached
+
+    log(
+        "1.1指标汇总缺少iFinD数值，自动获取："
+        f"{missing.min():%Y-%m-%d} 至 {missing.max():%Y-%m-%d}，"
+        f"共{len(missing)}个交易日"
+    )
+    fetched = fetch_11_index_and_turnover_values(missing.min(), missing.max())
+    fetched = fetched.loc[fetched.index.intersection(missing)]
+    combined = pd.concat([cached, fetched]).sort_index()
+    combined = combined[~combined.index.duplicated(keep="last")]
+    still_missing = missing.difference(
+        combined.dropna(subset=["转债指数", "全市场成交额"]).index
+    )
+    if not still_missing.empty:
+        missing_text = ", ".join(value.strftime("%Y-%m-%d") for value in still_missing[:10])
+        raise RuntimeError(f"iFinD自动获取后1.1指标仍缺少：{missing_text}")
+    log(f"1.1指标汇总iFinD数值已补齐：{len(fetched)}个交易日")
+    return combined
+
+
+def load_master() -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
     master_path = PARQUET_ROOT / "_special" / "总表.parquet"
     master = pd.read_parquet(master_path).set_index(BOND_CODE)
     listing = pd.to_datetime(master["上市日期"], errors="coerce")
     last_trade = pd.to_datetime(master["最后交易日"], errors="coerce")
     industry = master["申万行业"].replace("", np.nan)
-    return listing, last_trade, industry
+    bond_names = master["转债名称"].replace("", np.nan)
+    return listing, last_trade, industry, bond_names
 
 
 def date_columns_from_file(file: Path) -> list[str]:
@@ -551,6 +811,143 @@ def active_ids_for_date(
     stale_nontrading = values["成交额"].isna() & values["剩余期限"].notna()
     active = start_ok & end_ok & ~stale_nontrading & (values["余额"] > 0) & values["收盘价"].notna()
     return all_ids[active.fillna(False)]
+
+
+def calculate_weekly_bond_movers(
+    listing: pd.Series,
+    last_trade: pd.Series,
+    bond_names: pd.Series,
+    trading_calendar: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    """计算最新交易日所在自然周的个券复合涨跌幅前20名和后20名。"""
+    calendar = pd.DatetimeIndex(trading_calendar).normalize().unique().sort_values()
+    calendar = calendar[calendar <= LATEST_TRADE_DATE]
+    if calendar.empty:
+        raise RuntimeError("缺少交易日历，无法计算1.11转债周度涨跌幅个券")
+    latest_date = pd.Timestamp(calendar.max()).normalize()
+    week_start = latest_date - pd.Timedelta(days=latest_date.weekday())
+    week_dates = calendar[(calendar >= week_start) & (calendar <= latest_date)]
+    if week_dates.empty:
+        raise RuntimeError("最新自然周没有交易日，无法计算1.11转债周度涨跌幅个券")
+
+    month_files = sorted(
+        {
+            PARQUET_ROOT / f"{date:%Y}" / f"{date:%Y%m}.parquet"
+            for date in week_dates
+        }
+    )
+    missing_files = [str(path) for path in month_files if not path.is_file()]
+    if missing_files:
+        raise FileNotFoundError(f"计算1.11缺少月度parquet：{', '.join(missing_files)}")
+    columns = [BOND_CODE, TRADE_DATE, "涨跌幅", "成交额", "剩余期限", "余额", "收盘价"]
+    raw = pd.concat(
+        [pd.read_parquet(path, columns=columns) for path in month_files],
+        ignore_index=True,
+    )
+    raw[TRADE_DATE] = pd.to_datetime(raw[TRADE_DATE], errors="coerce").dt.normalize()
+    raw = raw.loc[raw[TRADE_DATE].isin(week_dates)].copy()
+    if raw.empty:
+        raise RuntimeError("最新自然周parquet没有个券数据，无法计算1.11")
+
+    returns = raw.pivot(index=BOND_CODE, columns=TRADE_DATE, values="涨跌幅")
+    returns = returns.reindex(columns=week_dates).apply(pd.to_numeric, errors="coerce")
+    complete = returns.notna().sum(axis=1) == len(week_dates)
+    weekly_returns = (1.0 + returns / 100.0).prod(axis=1) - 1.0
+    weekly_returns = weekly_returns.where(complete).replace([np.inf, -np.inf], np.nan)
+
+    latest_rows = (
+        raw.loc[raw[TRADE_DATE] == latest_date]
+        .drop_duplicates(BOND_CODE, keep="last")
+        .set_index(BOND_CODE)
+    )
+    all_ids = weekly_returns.index
+    latest_values = {
+        name: pd.to_numeric(latest_rows[name], errors="coerce").reindex(all_ids)
+        for name in ("成交额", "剩余期限", "余额", "收盘价")
+    }
+    active_ids = active_ids_for_date(
+        all_ids,
+        latest_date,
+        listing,
+        last_trade,
+        latest_values,
+    )
+    ranked = pd.DataFrame(
+        {
+            "转债代码": active_ids.astype(str),
+            "转债名称": bond_names.reindex(active_ids).to_numpy(),
+            "周涨跌幅": weekly_returns.reindex(active_ids).to_numpy(),
+        }
+    ).dropna(subset=["转债名称", "周涨跌幅"])
+    if len(ranked) < WEEKLY_MOVER_COUNT * 2:
+        raise RuntimeError(
+            f"1.11周度涨跌幅有效个券仅{len(ranked)}只，不足前后各{WEEKLY_MOVER_COUNT}只"
+        )
+
+    top = (
+        ranked.sort_values(
+            ["周涨跌幅", "转债代码"],
+            ascending=[False, True],
+            kind="mergesort",
+        )
+        .head(WEEKLY_MOVER_COUNT)
+        .assign(分组="前20名")
+    )
+    bottom = (
+        ranked.sort_values(
+            ["周涨跌幅", "转债代码"],
+            ascending=[True, True],
+            kind="mergesort",
+        )
+        .head(WEEKLY_MOVER_COUNT)
+        .assign(分组="后20名")
+    )
+    return pd.concat([top, bottom], ignore_index=True)[
+        ["分组", "转债代码", "转债名称", "周涨跌幅"]
+    ]
+
+
+def calculate_redemption_trigger_candidates(
+    listing: pd.Series,
+    last_trade: pd.Series,
+    bond_names: pd.Series,
+) -> pd.DataFrame:
+    """筛选最新交易日赎回累计天数大于0的存续转债。"""
+    latest_file = PARQUET_ROOT / f"{LATEST_TRADE_DATE:%Y}" / f"{LATEST_TRADE_DATE:%Y%m}.parquet"
+    columns = [BOND_CODE, TRADE_DATE, "赎回累计天数", "余额", "收盘价"]
+    raw = pd.read_parquet(latest_file, columns=columns)
+    raw[TRADE_DATE] = pd.to_datetime(raw[TRADE_DATE], errors="coerce").dt.normalize()
+    latest = (
+        raw.loc[raw[TRADE_DATE] == LATEST_TRADE_DATE.normalize()]
+        .drop_duplicates(BOND_CODE, keep="last")
+        .set_index(BOND_CODE)
+    )
+    cumulative_days = pd.to_numeric(latest["赎回累计天数"], errors="coerce")
+    balance = pd.to_numeric(latest["余额"], errors="coerce")
+    close = pd.to_numeric(latest["收盘价"], errors="coerce")
+    listed = listing.reindex(latest.index).le(LATEST_TRADE_DATE)
+    not_delisted = (last_trade.reindex(latest.index) + BDay(1)).ge(LATEST_TRADE_DATE)
+    mask = (
+        cumulative_days.gt(0)
+        & balance.gt(0)
+        & close.notna()
+        & listed.fillna(False)
+        & not_delisted.fillna(False)
+    )
+    ids = latest.index[mask]
+    candidates = pd.DataFrame(
+        {
+            "转债代码": ids.astype(str),
+            "转债名称": bond_names.reindex(ids).to_numpy(),
+            "累计天数": cumulative_days.reindex(ids).to_numpy(),
+        }
+    ).dropna(subset=["转债名称", "累计天数"])
+    candidates["累计天数"] = candidates["累计天数"].astype(int)
+    return candidates.sort_values(
+        ["累计天数", "转债代码"],
+        ascending=[False, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
 
 
 def history_valuation_row(day: str, x: pd.DataFrame) -> dict[str, object]:
@@ -989,12 +1386,32 @@ def build_major_valuation_metrics(market: pd.DataFrame) -> pd.DataFrame:
 
 
 def calculate_all() -> dict[str, pd.DataFrame]:
-    listing, last_trade, industry = load_master()
-    credit_yields = load_3y_credit_yields(PA_WORKBOOK)
-    aa_credit_yields = credit_yields["AA"]
-    index_and_turnover = load_11_index_and_turnover_values(PA_WORKBOOK)
+    listing, last_trade, industry, bond_names = load_master()
     all_files = sorted(PARQUET_ROOT.glob("20??/20????.parquet"))
     trading_calendar = build_trading_calendar(all_files)
+    required_11_dates = trading_calendar[
+        (trading_calendar >= START_DATE) & (trading_calendar <= LATEST_TRADE_DATE)
+    ]
+    credit_yields = ensure_3y_credit_yields_current(
+        PA_WORKBOOK,
+        required_11_dates,
+    )
+    aa_credit_yields = credit_yields["AA"]
+    index_and_turnover = ensure_11_index_and_turnover_values(
+        PA_WORKBOOK,
+        required_11_dates,
+    )
+    weekly_bond_movers = calculate_weekly_bond_movers(
+        listing,
+        last_trade,
+        bond_names,
+        trading_calendar,
+    )
+    redemption_trigger_candidates = calculate_redemption_trigger_candidates(
+        listing,
+        last_trade,
+        bond_names,
+    )
     inclusion_dates = build_inclusion_dates(listing, trading_calendar)
     files = [file for file in all_files if int(file.stem[:4]) >= START_DATE.year - 1]
 
@@ -1170,8 +1587,8 @@ def calculate_all() -> dict[str, pd.DataFrame]:
             for value in missing_market_values.head(10)
         )
         raise ValueError(
-            "PA转债周度数据的1.1指标汇总缺少iFinD缓存值："
-            f"{missing_text}。请先在Excel中完成iFinD取值并保存底稿。"
+            "PA转债周度数据的1.1指标汇总在自动iFinD取值后仍缺少："
+            f"{missing_text}。请检查iFinD返回值及交易日口径。"
         )
     market["百元拟合溢价率2017年以来分位数"] = expanding_percentile(market["百元拟合溢价率"])
     market["隐含波动率自2017年以来分位数"] = expanding_percentile(market["隐含波动率均值"])
@@ -1295,6 +1712,8 @@ def calculate_all() -> dict[str, pd.DataFrame]:
         "decomp_industry": decomp_industry,
         "decomp_parity": decomp_parity,
         "decomp_type": decomp_type,
+        "weekly_bond_movers": weekly_bond_movers,
+        "redemption_trigger_candidates": redemption_trigger_candidates,
     }
 
 
@@ -2770,6 +3189,141 @@ def _patch_return_decomposition_sheet_xml(
     return ET.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
+def _patch_weekly_bond_movers_sheet_xml(
+    sheet_xml: bytes,
+    movers: pd.DataFrame,
+) -> bytes:
+    """仅更新1.11的A:B列，保留C列及其右侧原有公式和格式。"""
+    root = ET.fromstring(sheet_xml)
+    sheet_data = root.find(_qname(_SHEET_NS, "sheetData"))
+    if sheet_data is None:
+        raise RuntimeError("1.11转债周度涨跌幅个券缺少sheetData")
+    row_by_number = {
+        int(row.get("r", "0")): row
+        for row in sheet_data.findall(_qname(_SHEET_NS, "row"))
+    }
+    blocks = (("前20名", 3), ("后20名", 27))
+    for group, start_row in blocks:
+        group_data = movers.loc[movers["分组"] == group].reset_index(drop=True)
+        if len(group_data) != WEEKLY_MOVER_COUNT:
+            raise RuntimeError(f"1.11的{group}数量不是{WEEKLY_MOVER_COUNT}只")
+        for offset, (_, record) in enumerate(group_data.iterrows()):
+            row_number = start_row + offset
+            row = row_by_number.get(row_number)
+            if row is None:
+                raise RuntimeError(f"1.11缺少第{row_number}行格式模板")
+            cells = {
+                _cell_column(cell.get("r", "")): cell
+                for cell in row.findall(_qname(_SHEET_NS, "c"))
+            }
+            for column in ("A", "B"):
+                cell = cells.get(column)
+                if cell is None:
+                    cell = ET.SubElement(row, _qname(_SHEET_NS, "c"))
+                    cell.set("r", f"{column}{row_number}")
+                    cells[column] = cell
+            _set_xml_cell_text(cells["A"], str(record["转债代码"]))
+            _set_xml_cell_text(cells["B"], str(record["转债名称"]))
+
+            cell_nodes = row.findall(_qname(_SHEET_NS, "c"))
+            for cell in cell_nodes:
+                row.remove(cell)
+            for cell in sorted(
+                cell_nodes,
+                key=lambda node: column_index_from_string(_cell_column(node.get("r", ""))),
+            ):
+                row.append(cell)
+    return ET.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
+def _translate_template_formula_row(
+    formula: str | None,
+    source_row: int,
+    target_row: int,
+) -> str | None:
+    if not formula or source_row == target_row:
+        return formula
+
+    def replace(match: re.Match[str]) -> str:
+        column, absolute_row, _ = match.groups()
+        row_number = source_row if absolute_row else target_row
+        return f"{column}{absolute_row}{row_number}"
+
+    return re.sub(
+        rf"(\$?[A-Z]{{1,3}})(\$?)({source_row})\b",
+        replace,
+        formula,
+    )
+
+
+def _patch_redemption_trigger_sheet_xml(
+    sheet_xml: bytes,
+    candidates: pd.DataFrame,
+) -> bytes:
+    """动态更新2.1的A、B、L列，其余列沿用Excel模板公式。"""
+    root = ET.fromstring(sheet_xml)
+    sheet_data = root.find(_qname(_SHEET_NS, "sheetData"))
+    if sheet_data is None:
+        raise RuntimeError("2.1即将触发赎回缺少sheetData")
+    template_row = next(
+        (
+            row
+            for row in sheet_data.findall(_qname(_SHEET_NS, "row"))
+            if row.get("r") == "2"
+        ),
+        None,
+    )
+    if template_row is None:
+        raise RuntimeError("2.1即将触发赎回缺少第2行公式模板")
+    for row in list(sheet_data.findall(_qname(_SHEET_NS, "row"))):
+        if int(row.get("r", "0")) >= 2:
+            sheet_data.remove(row)
+
+    for offset, (_, record) in enumerate(candidates.iterrows(), start=2):
+        row = deepcopy(template_row)
+        row.set("r", str(offset))
+        cells: dict[str, object] = {}
+        for cell in row.findall(_qname(_SHEET_NS, "c")):
+            column = _cell_column(cell.get("r", ""))
+            cell.set("r", f"{column}{offset}")
+            cells[column] = cell
+            formula_node = cell.find(_qname(_SHEET_NS, "f"))
+            if formula_node is not None:
+                formula_node.text = _translate_template_formula_row(
+                    formula_node.text,
+                    2,
+                    offset,
+                )
+                formula_node.set("ca", "1")
+                value_node = cell.find(_qname(_SHEET_NS, "v"))
+                if value_node is not None:
+                    cell.remove(value_node)
+        for column in ("A", "B", "H", "L"):
+            if column not in cells:
+                cell = ET.SubElement(row, _qname(_SHEET_NS, "c"))
+                cell.set("r", f"{column}{offset}")
+                cells[column] = cell
+        _set_xml_cell_text(cells["A"], str(record["转债代码"]))
+        _set_xml_cell_text(cells["B"], str(record["转债名称"]))
+        _set_xml_cell_value(cells["H"], None)
+        _set_xml_cell_value(cells["L"], int(record["累计天数"]))
+
+        cell_nodes = row.findall(_qname(_SHEET_NS, "c"))
+        for cell in cell_nodes:
+            row.remove(cell)
+        for cell in sorted(
+            cell_nodes,
+            key=lambda node: column_index_from_string(_cell_column(node.get("r", ""))),
+        ):
+            row.append(cell)
+        sheet_data.append(row)
+
+    dimension = root.find(_qname(_SHEET_NS, "dimension"))
+    if dimension is not None:
+        dimension.set("ref", f"A1:L{max(1, 1 + len(candidates))}")
+    return ET.tostring(root, xml_declaration=True, encoding="UTF-8", standalone=True)
+
+
 def _disable_forced_excel_recalculation(workbook_xml: bytes) -> bytes:
     root = ET.fromstring(workbook_xml)
     calc_properties = root.find(_qname(_SHEET_NS, "calcPr"))
@@ -2796,6 +3350,7 @@ def _remove_value_cells_from_calc_chain(
     history_sheet_id: str | None = None,
     style_sheet_id: str | None = None,
     decomposition_sheet_id: str | None = None,
+    redemption_trigger_sheet_id: str | None = None,
 ) -> bytes:
     """从计算链移除已转为纯数值的历史单元格。"""
     root = ET.fromstring(calc_chain_xml)
@@ -2862,6 +3417,12 @@ def _remove_value_cells_from_calc_chain(
             )
             and int(match.group(2)) >= 2
         )
+        is_redemption_trigger_formula = (
+            current_sheet_id == redemption_trigger_sheet_id
+            and match is not None
+            and 1 <= column_index_from_string(match.group(1)) <= 12
+            and int(match.group(2)) >= 2
+        )
         if (
             is_summary_value
             or is_parity_value
@@ -2872,6 +3433,7 @@ def _remove_value_cells_from_calc_chain(
             or is_history_value
             or is_style_value
             or is_decomposition_value
+            or is_redemption_trigger_formula
         ):
             root.remove(cell)
             changed = True
@@ -2904,6 +3466,8 @@ def write_workbook(data: dict[str, pd.DataFrame]) -> None:
             history_valuation_path = _sheet_xml_path(source, "1.8历史估值对比")
             style_factor_path = _sheet_xml_path(source, "1.9转债风格因子")
             return_decomposition_path = _sheet_xml_path(source, "1.10回报拆解")
+            weekly_bond_movers_path = _sheet_xml_path(source, "1.11转债周度涨跌幅个券")
+            redemption_trigger_path = _sheet_xml_path(source, "2.1即将触发赎回")
             style_reference_xml = source.read(parity_valuation_path)
             summary_sheet_ids = {
                 _sheet_id(source, "1.1指标汇总"),
@@ -2917,6 +3481,7 @@ def write_workbook(data: dict[str, pd.DataFrame]) -> None:
             history_sheet_id = _sheet_id(source, "1.8历史估值对比")
             style_sheet_id = _sheet_id(source, "1.9转债风格因子")
             decomposition_sheet_id = _sheet_id(source, "1.10回报拆解")
+            redemption_trigger_sheet_id = _sheet_id(source, "2.1即将触发赎回")
             with zipfile.ZipFile(temporary_path, "w") as target:
                 for item in source.infolist():
                     payload = source.read(item.filename)
@@ -2995,6 +3560,16 @@ def write_workbook(data: dict[str, pd.DataFrame]) -> None:
                             data["decomp_parity"],
                             data["decomp_type"],
                         )
+                    elif item.filename == weekly_bond_movers_path:
+                        payload = _patch_weekly_bond_movers_sheet_xml(
+                            payload,
+                            data["weekly_bond_movers"],
+                        )
+                    elif item.filename == redemption_trigger_path:
+                        payload = _patch_redemption_trigger_sheet_xml(
+                            payload,
+                            data["redemption_trigger_candidates"],
+                        )
                     elif item.filename == "xl/workbook.xml":
                         payload = _disable_forced_excel_recalculation(payload)
                     elif item.filename == "xl/calcChain.xml":
@@ -3009,6 +3584,7 @@ def write_workbook(data: dict[str, pd.DataFrame]) -> None:
                             history_sheet_id,
                             style_sheet_id,
                             decomposition_sheet_id,
+                            redemption_trigger_sheet_id,
                         )
                     target.writestr(item, payload)
         temporary_path.replace(OUTPUT_XLSX)
@@ -3314,6 +3890,51 @@ def _verify_return_decomposition_sheet(
                     abs_tol=1e-12,
                 ):
                     raise RuntimeError("1.10回报拆解分组与计算结果不一致")
+
+
+def _verify_weekly_bond_movers_sheet(
+    worksheet,
+    movers: pd.DataFrame,
+) -> None:
+    """校验1.11前后各20只个券的A:B代码与名称。"""
+    for group, start_row in (("前20名", 3), ("后20名", 27)):
+        expected = movers.loc[movers["分组"] == group].reset_index(drop=True)
+        if len(expected) != WEEKLY_MOVER_COUNT:
+            raise RuntimeError(f"1.11的{group}计算结果数量不正确")
+        for offset, (_, record) in enumerate(expected.iterrows()):
+            row_number = start_row + offset
+            code_cell = worksheet.cell(row_number, 1)
+            name_cell = worksheet.cell(row_number, 2)
+            if code_cell.data_type == "f" or name_cell.data_type == "f":
+                raise RuntimeError("1.11的A:B列不应包含公式")
+            if str(code_cell.value) != str(record["转债代码"]):
+                raise RuntimeError(f"1.11的{group}转债代码与计算结果不一致")
+            if str(name_cell.value) != str(record["转债名称"]):
+                raise RuntimeError(f"1.11的{group}转债名称与计算结果不一致")
+
+
+def _verify_redemption_trigger_sheet(
+    worksheet,
+    candidates: pd.DataFrame,
+) -> None:
+    """校验2.1的A、B、L列及其余Excel公式模板。"""
+    if worksheet.max_row != max(1, 1 + len(candidates)):
+        raise RuntimeError("2.1即将触发赎回明细行数与计算结果不一致")
+    for offset, (_, record) in enumerate(candidates.iterrows(), start=2):
+        code_cell = worksheet.cell(offset, 1)
+        name_cell = worksheet.cell(offset, 2)
+        days_cell = worksheet.cell(offset, 12)
+        if any(cell.data_type == "f" for cell in (code_cell, name_cell, days_cell)):
+            raise RuntimeError("2.1的A、B、L列不应包含公式")
+        if str(code_cell.value) != str(record["转债代码"]):
+            raise RuntimeError("2.1转债代码与计算结果不一致")
+        if str(name_cell.value) != str(record["转债名称"]):
+            raise RuntimeError("2.1转债名称与计算结果不一致")
+        if days_cell.value is None or int(days_cell.value) != int(record["累计天数"]):
+            raise RuntimeError("2.1累计天数与计算结果不一致")
+        for column_number in (3, 4, 5, 6, 7, 9):
+            if worksheet.cell(offset, column_number).data_type != "f":
+                raise RuntimeError("2.1由Excel计算的公式列缺失")
 
 
 def verify_workbook(
@@ -3705,6 +4326,14 @@ def verify_workbook(
                 expected_data["decomp_parity"],
                 expected_data["decomp_type"],
             )
+            _verify_weekly_bond_movers_sheet(
+                wb["1.11转债周度涨跌幅个券"],
+                expected_data["weekly_bond_movers"],
+            )
+            _verify_redemption_trigger_sheet(
+                wb["2.1即将触发赎回"],
+                expected_data["redemption_trigger_candidates"],
+            )
     finally:
         wb.close()
 
@@ -3729,6 +4358,7 @@ def verify_workbook(
             history_sheet_id = _sheet_id(archive, "1.8历史估值对比")
             style_sheet_id = _sheet_id(archive, "1.9转债风格因子")
             decomposition_sheet_id = _sheet_id(archive, "1.10回报拆解")
+            redemption_trigger_sheet_id = _sheet_id(archive, "2.1即将触发赎回")
             calc_chain_root = ET.fromstring(archive.read("xl/calcChain.xml"))
             current_sheet_id: str | None = None
             for cell in calc_chain_root:
@@ -3801,6 +4431,13 @@ def verify_workbook(
                     and int(match.group(2)) >= 2
                 ):
                     raise RuntimeError("计算链仍包含1.10回报拆解中已转为数值的单元格")
+                if (
+                    current_sheet_id == redemption_trigger_sheet_id
+                    and match is not None
+                    and 1 <= column_index_from_string(match.group(1)) <= 12
+                    and int(match.group(2)) >= 2
+                ):
+                    raise RuntimeError("计算链仍包含2.1即将触发赎回的旧公式引用")
         parity_sheet_xml = ET.fromstring(
             archive.read(_sheet_xml_path(archive, "1.3分平价估值"))
         )
@@ -3824,6 +4461,7 @@ def verify_workbook(
             ("1.8历史估值对比", 1),
             ("1.9转债风格因子", 1),
             ("1.10回报拆解", 1),
+            ("2.1即将触发赎回", 1),
         ):
             sheet_xml = ET.fromstring(
                 archive.read(_sheet_xml_path(archive, sheet_name))
@@ -3868,6 +4506,8 @@ def save_meta(data: dict[str, pd.DataFrame]) -> None:
             "1.8历史估值对比",
             "1.9转债风格因子",
             "1.10回报拆解",
+            "1.11转债周度涨跌幅个券",
+            "2.1即将触发赎回",
         ],
         "latest_return_decomposition": data["decomp_timeseries"].head(1).replace({np.nan: None}).to_dict("records"),
     }

@@ -416,13 +416,13 @@ def fetch_v21_listing_prices(
     as_of: date,
     targets: Iterable[tuple[str, date | None]],
     trading_dates: list[date],
-) -> tuple[dict[tuple[str, date], float], dict[str, Any]]:
+) -> tuple[dict[tuple[str, date], dict[str, Any]], dict[str, Any]]:
     """运行正式 V2.1 模型并读取其最终预测价。
 
     V2.1 只会为已有明确上市日期、且行情和发行因子均完整的转债生成结果。
     此处按“转债代码 + 上市日期”精确连接，并用日历的 iFinD 交易日序列重算
-    严格 T-1。只有预测信息日等于上市前一交易日、模型摘要截止日与预测信息日
-    一致且不晚于日历统计日时才展示；其余由调用方保留空值。
+    严格 T-1。模型摘要截止日与预测信息日一致且不晚于日历统计日时均可展示；
+    非严格 T-1 由调用方和渲染层追加星号。
     """
 
     target_keys = {
@@ -437,7 +437,7 @@ def fetch_v21_listing_prices(
         "data_as_of": None,
         "forecast_count": 0,
         "matched_count": 0,
-        "display_rule": "仅展示按iFinD交易日历重算的严格T-1预测",
+        "display_rule": "展示最新有效预测，非严格T-1加星号",
     }
     if not target_keys:
         return {}, empty_meta
@@ -537,7 +537,6 @@ def fetch_v21_listing_prices(
         & work["预测信息日"].notna()
         & work["预测信息日"].eq(summary_as_of)
         & work["预测信息日"].le(as_of)
-        & strict_t1
         & work["最终预测价"].notna()
         & work["最终预测价"].gt(0)
         & work["最终预测价"].lt(float("inf"))
@@ -546,8 +545,12 @@ def fetch_v21_listing_prices(
         subset=["转债代码", "上市日期"], keep="last"
     )
     prices = {
-        (str(row["转债代码"]), row["上市日期"]): float(row["最终预测价"])
-        for _, row in eligible.iterrows()
+        (str(row["转债代码"]), row["上市日期"]): {
+            "price": float(row["最终预测价"]),
+            "strict_t1": bool(strict_t1.loc[index]),
+            "data_as_of": summary_as_of.isoformat(),
+        }
+        for index, row in eligible.iterrows()
     }
     return prices, {
         "model": "上市价格预测V2.1",
@@ -556,7 +559,7 @@ def fetch_v21_listing_prices(
         "data_as_of": summary_as_of.isoformat(),
         "forecast_count": int(len(work)),
         "matched_count": int(len(prices)),
-        "display_rule": "仅展示按iFinD交易日历重算的严格T-1预测",
+        "display_rule": "展示最新有效预测，非严格T-1加星号",
     }
 
 
@@ -633,26 +636,34 @@ def build_payload(as_of: date, days: int, ths_id: str | None, ths_password: str 
             "data_as_of": None,
             "forecast_count": 0,
             "matched_count": 0,
-            "display_rule": "仅展示按iFinD交易日历重算的严格T-1预测",
+            "display_rule": "展示最新有效预测，非严格T-1加星号",
         }
         print(f"[警告] {exc}；日历预测价显示“—”")
 
     for bond in bonds:
         listed_date = parse_ifind_date(bond["上市日期"])
-        predicted_price = (
+        prediction = (
             listing_prices.get((str(bond["转债代码"]), listed_date))
             if listed_date is not None
             else None
         )
+        predicted_price = prediction["price"] if prediction is not None else None
         bond["上市价格预测V2.1"] = predicted_price
-        if predicted_price is not None:
+        bond["上市价格预测非严格T1"] = bool(
+            prediction is not None and not prediction["strict_t1"]
+        )
+        if prediction is not None and prediction["strict_t1"]:
             bond["上市价格预测状态"] = "已预测：严格T-1"
+        elif prediction is not None:
+            bond["上市价格预测状态"] = (
+                f"已预测：非严格T-1，数据截至{prediction['data_as_of']}"
+            )
         elif listed_date is None:
             bond["上市价格预测状态"] = "未覆盖：无明确上市日"
         elif str(pricing_meta["status"]).startswith("运行失败"):
             bond["上市价格预测状态"] = "未覆盖：模型运行失败"
         else:
-            bond["上市价格预测状态"] = "未覆盖：非严格T-1、结果过期或关键输入缺失"
+            bond["上市价格预测状态"] = "未覆盖：结果过期或关键输入缺失"
 
     def sort_key(bond: dict[str, Any]) -> tuple[str, str]:
         dates = [value for value in (bond["上市日期"], bond["发行日期"]) if value]
@@ -701,6 +712,7 @@ def render_payload(payload: dict[str, Any], output_dir: Path) -> dict[str, Path]
         "债项评级",
         "评级公司",
         "上市价格预测V2.1",
+        "上市价格预测非严格T1",
         "上市价格预测状态",
         "发行日期",
         "上市日期",
@@ -714,6 +726,9 @@ def render_payload(payload: dict[str, Any], output_dir: Path) -> dict[str, Path]
         predicted_price = clean_scalar(normalized.get("上市价格预测V2.1"))
         normalized["上市价格预测V2.1"] = (
             float(predicted_price) if predicted_price is not None else None
+        )
+        normalized["上市价格预测非严格T1"] = (
+            clean_scalar(normalized.get("上市价格预测非严格T1")) is True
         )
         normalized["上市价格预测状态"] = first_nonempty(
             normalized.get("上市价格预测状态"),

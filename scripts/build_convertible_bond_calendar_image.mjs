@@ -130,12 +130,15 @@ async function build(payload, xlsxPath, pngPath) {
   if (hasBonds) {
     const baseRows = payload.bonds.map((bond) => {
       const predictedPrice = bond["上市价格预测V2.1"];
+      const nonStrictT1 = bond["上市价格预测非严格T1"] === true;
       const displayPrice =
         predictedPrice !== null &&
         predictedPrice !== undefined &&
         predictedPrice !== "" &&
         Number.isFinite(Number(predictedPrice))
-          ? Number(predictedPrice)
+          ? nonStrictT1
+            ? `${Number(predictedPrice).toFixed(2)}*`
+            : Number(predictedPrice)
           : "—";
       return [
         String(bond["网上申购代码"]),
