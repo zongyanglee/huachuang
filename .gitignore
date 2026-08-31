@@ -68,3 +68,7 @@ data/*
 !data/转债个券历史序列/**
 !data/clauses/
 !data/clauses/**
+
+# Versioned shared assets (binary files are stored through Git LFS)
+!assets/
+!assets/**
