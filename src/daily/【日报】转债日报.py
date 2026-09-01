@@ -2394,6 +2394,86 @@ def set_plain_text_control_value(
     return count
 
 
+def _daily_commentary_summary_lines(commentary: str) -> list[str]:
+    """提取首页点评正文，排除写给报告复制使用的图表标题清单。"""
+    body = str(commentary).replace("\r\n", "\n").replace("\r", "\n")
+    body = body.split("\n\n图表标题：", 1)[0]
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    if len(lines) != 12:
+        raise RuntimeError(
+            "Word首页点评必须包含12个非空段落："
+            f"实际{len(lines)}个"
+        )
+    return lines
+
+
+def _replace_word_paragraph_text_preserving_runs(
+    paragraph: ET.Element,
+    value: str,
+) -> None:
+    """复用段落现有文字节点，保留字体、缩进和项目符号格式。"""
+    text_nodes = paragraph.findall(".//w:t", WORD_XML_NAMESPACES)
+    if not text_nodes:
+        raise RuntimeError("Word首页点评目标段落没有文本节点")
+    for node in text_nodes:
+        node.text = ""
+
+    heading, separator, remainder = str(value).partition("：")
+    if separator and remainder and len(text_nodes) >= 2:
+        text_nodes[0].text = f"{heading}{separator}"
+        text_nodes[1].text = remainder
+    else:
+        text_nodes[0].text = str(value)
+
+
+def replace_daily_word_summary(
+    root: ET.Element,
+    commentary: str,
+) -> None:
+    """把日报点评逐段写入首页摘要控件，并保留固定风险提示。"""
+    tag_attribute = _word_tag("val")
+    controls = []
+    for control in root.findall(".//w:sdt", WORD_XML_NAMESPACES):
+        tag_node = control.find("w:sdtPr/w:tag", WORD_XML_NAMESPACES)
+        if (
+            tag_node is not None
+            and tag_node.get(tag_attribute) == "ReportSummary"
+        ):
+            controls.append(control)
+    if len(controls) != 1:
+        raise RuntimeError(
+            "Word模板中的ReportSummary内容控件数量异常："
+            f"{len(controls)}"
+        )
+
+    paragraphs = [
+        paragraph
+        for paragraph in controls[0].findall(
+            "w:sdtContent//w:p", WORD_XML_NAMESPACES
+        )
+        if "".join(paragraph.itertext()).strip()
+    ]
+    risk_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs)
+            if "".join(paragraph.itertext()).strip() == "风险提示："
+        ),
+        None,
+    )
+    if risk_index is None:
+        raise RuntimeError("Word首页摘要缺少固定风险提示")
+    dynamic_paragraphs = paragraphs[:risk_index]
+    lines = _daily_commentary_summary_lines(commentary)
+    if len(dynamic_paragraphs) != len(lines):
+        raise RuntimeError(
+            "Word首页点评段落槽位数量异常："
+            f"{len(dynamic_paragraphs)} != {len(lines)}"
+        )
+    for paragraph, line in zip(dynamic_paragraphs, lines):
+        _replace_word_paragraph_text_preserving_runs(paragraph, line)
+
+
 def replace_text_after_seq_field(
     paragraph: ET.Element,
     value: str,
@@ -2564,6 +2644,7 @@ def _patch_daily_word_document(
     index_rows: list[list[str]],
     chart_titles: list[str],
     industry_title: str,
+    commentary: str,
 ) -> tuple[bytes, list[str]]:
     root = ET.fromstring(document_bytes)
     tables = _top_level_word_tables(root)
@@ -2578,6 +2659,7 @@ def _patch_daily_word_document(
         root, "ReportTitle", f"转债市场日度跟踪{run_date:%Y%m%d}"
     ) != 1:
         raise RuntimeError("Word模板中的ReportTitle内容控件数量异常")
+    replace_daily_word_summary(root, commentary)
 
     index_table_rows = _direct_table_rows(tables[1])
     if len(index_table_rows) != 12:
@@ -2663,6 +2745,7 @@ def _write_patched_word_package(
     chart_titles: list[str],
     industry_title: str,
     image_paths: list[Path],
+    commentary: str,
 ) -> None:
     with zipfile.ZipFile(template_path, "r") as source:
         document_bytes = source.read("word/document.xml")
@@ -2674,6 +2757,7 @@ def _write_patched_word_package(
             index_rows,
             chart_titles,
             industry_title,
+            commentary,
         )
         patched_header = _patch_daily_word_header(header_bytes, run_date)
         media_members = _resolve_word_media_members(
@@ -2707,6 +2791,7 @@ def validate_generated_daily_word_report(
     index_rows: list[list[str]],
     chart_titles: list[str],
     industry_title: str,
+    commentary: str,
 ) -> None:
     """验证生成文件的结构与全部动态槽位。"""
     with zipfile.ZipFile(output_path) as package:
@@ -2762,6 +2847,33 @@ def validate_generated_daily_word_report(
         if actual_index_rows != index_rows:
             raise RuntimeError("Word输出图表1数据与输入不一致")
 
+        summary_controls = []
+        for control in document_root.findall(
+            ".//w:sdt", WORD_XML_NAMESPACES
+        ):
+            tag_node = control.find(
+                "w:sdtPr/w:tag", WORD_XML_NAMESPACES
+            )
+            if (
+                tag_node is not None
+                and tag_node.get(_word_tag("val")) == "ReportSummary"
+            ):
+                summary_controls.append(control)
+        if len(summary_controls) != 1:
+            raise RuntimeError("Word输出ReportSummary内容控件数量异常")
+        summary_paragraphs = [
+            "".join(paragraph.itertext()).strip()
+            for paragraph in summary_controls[0].findall(
+                "w:sdtContent//w:p", WORD_XML_NAMESPACES
+            )
+            if "".join(paragraph.itertext()).strip()
+        ]
+        expected_summary = _daily_commentary_summary_lines(commentary)
+        if summary_paragraphs[: len(expected_summary)] != expected_summary:
+            raise RuntimeError("Word输出首页点评与输入不一致")
+        if "图表标题：" in "".join(summary_paragraphs):
+            raise RuntimeError("Word输出首页误写入图表标题清单")
+
 
 def build_daily_word_report(
     run_date: date,
@@ -2770,6 +2882,7 @@ def build_daily_word_report(
     chart_titles: list[str],
     industry_performance: pd.DataFrame,
     industry_chart_path: Path,
+    commentary: str,
     template_path: Path = DAILY_WORD_TEMPLATE_PATH,
 ) -> Path:
     """按冻结模板生成当日 Word 报告，不调用 Word COM。"""
@@ -2802,6 +2915,7 @@ def build_daily_word_report(
             chart_titles,
             industry_title,
             image_paths,
+            commentary,
         )
         validate_generated_daily_word_report(
             temporary_path,
@@ -2810,6 +2924,7 @@ def build_daily_word_report(
             index_rows,
             chart_titles,
             industry_title,
+            commentary,
         )
         os.replace(temporary_path, output_path)
     finally:
@@ -9668,6 +9783,7 @@ def run(
         long_chart_titles,
         industry_performance,
         industry_performance_png,
+        commentary,
     )
     report_progress(98, "整理输出文件")
     remove_obsolete_outputs(output_dir, workbook_path)

@@ -73,6 +73,24 @@ def _industry_frame() -> pd.DataFrame:
     )
 
 
+def _daily_commentary_with_chart_titles() -> str:
+    dynamic_lines = [
+        "市场概况：转债缩量上涨，估值压缩",
+        "指数表现：中证转债指数环比上涨0.68%。",
+        "市场风格：中盘价值相对占优。",
+        "资金表现：可转债市场成交额为500.56亿元。",
+        "转债价格：价格中位数为134.92元。",
+        "转债估值：百元平价拟合转股溢价率为42.33%。",
+        "行业表现：正股行业指数上涨占比过半。",
+        "转债市场共计17个行业下跌。",
+        "(1) 收盘价：大周期环比-0.35%。",
+        "(2) 转股溢价率：大周期环比-1.57pct。",
+        "(3) 转换价值：大周期环比+0.62%。",
+        "(4) 纯债溢价率：大周期环比-0.59pct。",
+    ]
+    return "\n".join(dynamic_lines) + "\n\n图表标题：\n1. 不应写入首页"
+
+
 def _package_hashes(path: Path) -> dict[str, str]:
     with zipfile.ZipFile(path) as package:
         return {
@@ -202,6 +220,7 @@ class DailyWordTemplateTests(unittest.TestCase):
                 chart_titles,
                 _industry_frame(),
                 industry_path,
+                _daily_commentary_with_chart_titles(),
             )
 
             self.assertTrue(output_path.is_file())
@@ -244,6 +263,42 @@ class DailyWordTemplateTests(unittest.TestCase):
                 self.assertIn("标题24", document_text)
                 self.assertIn("行业轮动情况：传媒、计算机、煤炭领涨", document_text)
                 self.assertIn("2026年08月31日", header_text)
+                summary_control = next(
+                    (
+                        control
+                        for control in document.findall(
+                            ".//w:sdt", namespaces
+                        )
+                        if (
+                            control.find("w:sdtPr/w:tag", namespaces)
+                            is not None
+                            and control.find(
+                                "w:sdtPr/w:tag", namespaces
+                            ).get(f"{{{W_NS}}}val")
+                            == "ReportSummary"
+                        )
+                    ),
+                    None,
+                )
+                self.assertIsNotNone(summary_control)
+                assert summary_control is not None
+                summary_paragraphs = [
+                    "".join(paragraph.itertext())
+                    for paragraph in summary_control.findall(
+                        "w:sdtContent//w:p", namespaces
+                    )
+                    if "".join(paragraph.itertext()).strip()
+                ]
+                self.assertEqual(
+                    summary_paragraphs[:12],
+                    _daily_commentary_with_chart_titles()
+                    .split("\n\n图表标题：", 1)[0]
+                    .splitlines(),
+                )
+                self.assertEqual(summary_paragraphs[-2], "风险提示：")
+                self.assertIn("正股波动较大", summary_paragraphs[-1])
+                self.assertNotIn("图表标题", "".join(summary_paragraphs))
+                self.assertNotIn("不应写入首页", "".join(summary_paragraphs))
                 self.assertEqual(
                     sum(
                         "SEQ 图表" in "".join(
