@@ -5083,6 +5083,84 @@ def fetch_price_parity_series(
     return result, source
 
 
+def fetch_ytm_median_source(
+    run_date: date,
+    parquet_root: Path = CB_PARQUET_ROOT,
+) -> dict[str, object]:
+    """从月度个券 Parquet 计算最新及前一交易日的 YTM 中位数。"""
+    end_month = f"{run_date:%Y%m}"
+    parquet_paths = sorted(
+        (
+            path
+            for path in parquet_root.glob("[0-9][0-9][0-9][0-9]/*.parquet")
+            if path.stem.isdigit()
+            and len(path.stem) == 6
+            and path.stem <= end_month
+        ),
+        key=lambda path: path.stem,
+        reverse=True,
+    )
+    if not parquet_paths:
+        raise FileNotFoundError(f"未找到月度转债 Parquet：{parquet_root}")
+
+    required = {"交易日期", "交易状态", "YTM"}
+    frames: list[pd.DataFrame] = []
+    trading_dates: set[pd.Timestamp] = set()
+    for parquet_path in parquet_paths:
+        frame = pd.read_parquet(parquet_path, columns=list(required)).copy()
+        if not required.issubset(frame.columns):
+            raise RuntimeError(
+                f"月度转债 Parquet 字段异常：{parquet_path}，"
+                f"缺少{sorted(required - set(frame.columns))}"
+            )
+        frame["交易日期"] = pd.to_datetime(
+            frame["交易日期"], errors="coerce"
+        ).dt.normalize()
+        frame["YTM"] = pd.to_numeric(frame["YTM"], errors="coerce")
+        frame = frame.loc[
+            frame["交易日期"].notna()
+            & frame["交易日期"].le(pd.Timestamp(run_date))
+            & frame["交易状态"].astype(str).str.strip().eq("交易")
+            & frame["YTM"].notna(),
+            ["交易日期", "YTM"],
+        ]
+        if frame.empty:
+            continue
+        frames.append(frame)
+        trading_dates.update(frame["交易日期"].unique())
+        if len(trading_dates) >= 2:
+            break
+
+    if not frames:
+        raise RuntimeError("月度转债 Parquet 中没有有效 YTM 样本")
+    daily = (
+        pd.concat(frames, ignore_index=True)
+        .groupby("交易日期", as_index=False)
+        .agg(YTM中位数=("YTM", "median"), 样本数=("YTM", "size"))
+        .sort_values("交易日期")
+        .drop_duplicates("交易日期", keep="last")
+    )
+    if len(daily) < 2 or daily.iloc[-1]["交易日期"].date() != run_date:
+        latest = daily["交易日期"].max() if not daily.empty else pd.NaT
+        raise RuntimeError(
+            f"YTM中位数未更新至 {run_date:%Y-%m-%d}，当前最新日期：{latest}"
+        )
+    latest = daily.iloc[-1]
+    previous = daily.iloc[-2]
+    return {
+        "parquetRoot": str(parquet_root),
+        "latestDate": f"{latest['交易日期']:%Y-%m-%d}",
+        "previousDate": f"{previous['交易日期']:%Y-%m-%d}",
+        "latestValue": float(latest["YTM中位数"]),
+        "dailyChangePctPoint": (
+            float(latest["YTM中位数"]) - float(previous["YTM中位数"])
+        ),
+        "latestSampleCount": int(latest["样本数"]),
+        "previousSampleCount": int(previous["样本数"]),
+        "sampleRule": "交易状态=交易且YTM有效，按交易日取个券截面中位数",
+    }
+
+
 def fetch_close_price_distribution_series(
     run_date: date,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
@@ -8877,6 +8955,7 @@ def build_fuguo_daily_text(
     turnover: pd.DataFrame,
     price_parity_source: dict[str, object],
     valuation_source: dict[str, object],
+    ytm_source: dict[str, object],
 ) -> str:
     """生成富国日报使用的精简版转债市场日度跟踪文字。"""
     index_rows = index_performance.loc[
@@ -8939,6 +9018,13 @@ def build_fuguo_daily_text(
     valuation_direction, valuation_magnitude = _commentary_direction(
         valuation_change, positive="上升", negative="下降"
     )
+    ytm_change = float(ytm_source["dailyChangePctPoint"])
+    if math.isclose(ytm_change, 0.0, abs_tol=1e-12):
+        ytm_direction = "持平"
+    elif ytm_change < 0:
+        ytm_direction = "下降"
+    else:
+        ytm_direction = "上升"
     return (
         f"转债市场日度跟踪{run_date:%Y%m%d}\n"
         f"中证转债指数{index_direction}{index_magnitude:.2f}%。"
@@ -8952,6 +9038,8 @@ def build_fuguo_daily_text(
         f"{valuation_magnitude:.2f}pct。"
         f"溢价率在2019年以来"
         f"{float(valuation_source['percentileSince2019']):.2f}%分位数。"
+        f"YTM中位数为{float(ytm_source['latestValue']):.2f}%，"
+        f"较前一日{ytm_direction}{abs(ytm_change):.2f}pct。"
     )
 
 
@@ -9475,6 +9563,7 @@ def run(
         fetch_close_price_distribution_series(run_date)
     )
     price_parity, price_parity_source = fetch_price_parity_series(run_date)
+    ytm_source = fetch_ytm_median_source(run_date)
     equity_bond_weighted, equity_bond_weighted_source = (
         fetch_equity_bond_weighted_series(run_date)
     )
@@ -9773,6 +9862,7 @@ def run(
         turnover=index,
         price_parity_source=price_parity_source,
         valuation_source=valuation_source,
+        ytm_source=ytm_source,
     )
     write_daily_commentary(fuguo_daily_text, fuguo_daily_text_path)
     report_progress(97, "填充 Word 报告")
