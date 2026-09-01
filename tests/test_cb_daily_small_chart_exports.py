@@ -46,6 +46,26 @@ class DailySmallChartExportTests(unittest.TestCase):
                 self.assertEqual(result.size, (100, 88))
                 self.assertEqual(result.getpixel((50, 0))[:3], (0, 255, 0))
 
+    def test_titleless_export_removes_title_separator_at_crop_boundary(self) -> None:
+        """标题栏底部分隔线不得成为独立小图顶端的细线。"""
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            source_path = output_dir / "含标题分隔线源图.png"
+            image = Image.new("RGB", (100, 100), "white")
+            for x in range(100):
+                image.putpixel((x, 12), (127, 127, 127))
+                image.putpixel((x, 13), (0, 255, 0))
+            image.save(source_path)
+
+            MODULE.export_numbered_titleless_small_charts(
+                output_dir,
+                chart_specs=((1, "成交额", source_path.name, 0.12),),
+            )
+
+            with Image.open(output_dir / "01_成交额.png") as result:
+                self.assertEqual(result.size, (100, 88))
+                self.assertEqual(result.getpixel((50, 0))[:3], (0, 255, 0))
+
     def test_default_numbering_follows_swapped_long_report_order(self) -> None:
         """估值修复指数和平价分类换位后，独立小图编号应同步。"""
         with tempfile.TemporaryDirectory() as directory:

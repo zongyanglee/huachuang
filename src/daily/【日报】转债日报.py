@@ -7906,6 +7906,19 @@ def compose_fuguo_daily_report(
             chart.close()
 
 
+def _remove_first_raster_row_preserving_size(image: Image.Image) -> Image.Image:
+    """移除标题分隔线所在首行，同时保持模板所需的像素尺寸。"""
+    if image.height < 2:
+        raise RuntimeError("小图正文高度不足2像素")
+    cleaned = Image.new(image.mode, image.size)
+    cleaned.paste(image.crop((0, 1, image.width, image.height)), (0, 0))
+    cleaned.paste(
+        image.crop((0, image.height - 1, image.width, image.height)),
+        (0, image.height - 1),
+    )
+    return cleaned
+
+
 def export_numbered_titleless_small_charts(
     output_dir: Path,
     chart_specs: tuple[tuple[int, str, str, float], ...] = SMALL_CHART_EXPORT_SPECS,
@@ -7921,6 +7934,9 @@ def export_numbered_titleless_small_charts(
             if crop_top <= 0 or crop_top >= source.height:
                 raise RuntimeError(f"小图标题栏高度异常：{source_path.name}")
             titleless = source.crop((0, crop_top, source.width, source.height))
+            if titleless.height < 2:
+                raise RuntimeError(f"小图正文高度异常：{source_path.name}")
+            titleless = _remove_first_raster_row_preserving_size(titleless)
             temporary_output = output_path.with_name(
                 f".{output_path.stem}.{os.getpid()}.tmp.png"
             )
