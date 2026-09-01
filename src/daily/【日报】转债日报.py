@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from configparser import ConfigParser
 from contextlib import redirect_stdout
+import hashlib
 import io
 import json
 import math
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -41,6 +44,18 @@ with redirect_stdout(io.StringIO()):
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
+DAILY_WORD_TEMPLATE_PATH = (
+    WORKSPACE / "【华创固收】转债市场日度跟踪20260831.docx"
+)
+DAILY_WORD_TEMPLATE_SHA256 = (
+    "922AA1FC6DA6C384E264A7077CBB7CE02FAE9C7501539D4E8B74CC76C4303FB3"
+)
+WORD_XML_NAMESPACES = {
+    "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "pr": "http://schemas.openxmlformats.org/package/2006/relationships",
+}
 FONT_PATH = WORKSPACE / "assets/fonts/KaiTi_GB2312.ttf"
 TITLE_FONT_PATH = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "simhei.ttf"
 CHART_FONT_PATH = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "STKAITI.TTF"
@@ -2172,6 +2187,635 @@ STYLE_INDEX_SPECS = (
     ("399376.SZ", "小盘成长", "小盘成长"),
     ("399377.SZ", "小盘价值", "小盘价值"),
 )
+WORD_INDEX_VALUE_COLUMNS = (
+    "收盘价",
+    "日涨跌幅",
+    "近一周涨跌幅",
+    "近一月涨跌幅",
+    "年初至今涨跌幅",
+)
+WORD_INDEX_DISPLAY_NAMES = {
+    "可转债等权": "转债等权",
+    "可转债正股等权": "正股等权",
+    "可转债预案": "转债预案",
+    "大盘指数(申万)": "大盘指数",
+    "中盘指数(申万)": "中盘指数",
+    "小盘指数(申万)": "小盘指数",
+}
+
+
+def build_word_index_table_rows(
+    index_performance: pd.DataFrame,
+) -> list[list[str]]:
+    """生成 Word 图表1的九行左右并列显示数据。"""
+    required = {"组别", "指数名称", *WORD_INDEX_VALUE_COLUMNS}
+    missing = required - set(index_performance.columns)
+    if missing:
+        raise RuntimeError(f"Word指数表缺少字段：{sorted(missing)}")
+    rows_by_name = index_performance.set_index("指数名称", drop=False)
+    main_names = [display for _, _, display in MAIN_INDEX_SPECS]
+    style_names = [display for _, _, display in STYLE_INDEX_SPECS]
+    missing_names = [
+        name
+        for name in (*main_names, *style_names)
+        if name not in rows_by_name.index
+    ]
+    if missing_names:
+        raise RuntimeError(f"Word指数表缺少指数：{missing_names}")
+
+    result: list[list[str]] = []
+    for main_name, style_name in zip(main_names, style_names):
+        row: list[str] = []
+        for name in (main_name, style_name):
+            values = rows_by_name.loc[name]
+            if isinstance(values, pd.DataFrame):
+                raise RuntimeError(f"Word指数表存在重复指数：{name}")
+            word_name = WORD_INDEX_DISPLAY_NAMES.get(name, name)
+            row.extend(
+                [
+                    word_name,
+                    *(
+                        f"{float(values[column]):.2f}"
+                        for column in WORD_INDEX_VALUE_COLUMNS
+                    ),
+                ]
+            )
+        result.append(row)
+    return result
+
+
+def build_industry_rotation_title(
+    industry_performance: pd.DataFrame,
+) -> str:
+    """按正股行业指数日涨跌幅生成行业轮动标题。"""
+    required = {"行业名称", "正股日涨跌幅"}
+    missing = required - set(industry_performance.columns)
+    if missing:
+        raise RuntimeError(f"行业轮动标题缺少字段：{sorted(missing)}")
+    ranked = industry_performance.dropna(subset=list(required)).copy()
+    ranked["_原始顺序"] = range(len(ranked))
+    ranked = ranked.sort_values(
+        ["正股日涨跌幅", "_原始顺序"],
+        ascending=[False, True],
+        kind="stable",
+    )
+    if len(ranked) < 3:
+        raise RuntimeError("行业轮动标题至少需要3个有效行业")
+    leaders = "、".join(ranked.head(3)["行业名称"].astype(str))
+    return f"行业轮动情况：{leaders}领涨"
+
+
+def _sha256(path: Path) -> str:
+    """返回文件的大写 SHA-256。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _word_tag(local_name: str) -> str:
+    return f"{{{WORD_XML_NAMESPACES['w']}}}{local_name}"
+
+
+def _relationship_tag(local_name: str) -> str:
+    return f"{{{WORD_XML_NAMESPACES['r']}}}{local_name}"
+
+
+def _package_relationship_tag(local_name: str) -> str:
+    return f"{{{WORD_XML_NAMESPACES['pr']}}}{local_name}"
+
+
+def _top_level_word_tables(document_root: ET.Element) -> list[ET.Element]:
+    body = document_root.find("w:body", WORD_XML_NAMESPACES)
+    if body is None:
+        raise RuntimeError("Word模板缺少主文档正文")
+    return [child for child in body if child.tag == _word_tag("tbl")]
+
+
+def _count_word_field_instructions(
+    package: zipfile.ZipFile,
+    pattern: re.Pattern[str],
+) -> int:
+    count = 0
+    for name in package.namelist():
+        if not name.startswith("word/") or not name.endswith(".xml"):
+            continue
+        try:
+            root = ET.fromstring(package.read(name))
+        except ET.ParseError:
+            continue
+        instruction = "".join(
+            node.text or ""
+            for node in root.findall(".//w:instrText", WORD_XML_NAMESPACES)
+        )
+        count += len(pattern.findall(instruction))
+    return count
+
+
+def inspect_daily_word_template(template_path: Path) -> dict[str, object]:
+    """读取日报模板的冻结结构，用于写入前的严格校验。"""
+    if not template_path.is_file():
+        raise FileNotFoundError(f"Word日报模板不存在：{template_path}")
+    with zipfile.ZipFile(template_path) as package:
+        document_root = ET.fromstring(package.read("word/document.xml"))
+        tables = _top_level_word_tables(document_root)
+        relationship_ids: list[str] = []
+        for table in tables[2:15]:
+            for blip in table.findall(".//a:blip", WORD_XML_NAMESPACES):
+                relationship_id = blip.get(_relationship_tag("embed"))
+                if relationship_id:
+                    relationship_ids.append(relationship_id)
+        sequence_count = sum(
+            "SEQ 图表" in "".join(
+                node.text or ""
+                for node in paragraph.findall(
+                    ".//w:instrText", WORD_XML_NAMESPACES
+                )
+            )
+            for paragraph in document_root.findall(
+                ".//w:p", WORD_XML_NAMESPACES
+            )
+        )
+        page_count = _count_word_field_instructions(
+            package, re.compile(r"\bPAGE\b")
+        )
+        return {
+            "sha256": _sha256(template_path),
+            "topLevelTableCount": len(tables),
+            "chartImageRelationshipIds": relationship_ids,
+            "sequenceFieldCount": sequence_count,
+            "pageFieldCount": page_count,
+            "memberNames": tuple(package.namelist()),
+        }
+
+
+def validate_daily_word_template(template_path: Path) -> dict[str, object]:
+    """验证模板仍与已审计版本一致，防止改版后错位写入。"""
+    contract = inspect_daily_word_template(template_path)
+    expected = {
+        "sha256": DAILY_WORD_TEMPLATE_SHA256,
+        "topLevelTableCount": 18,
+        "chartImageRelationshipIds": [
+            f"rId{number}" for number in range(14, 39)
+        ],
+        "sequenceFieldCount": 26,
+        "pageFieldCount": 1,
+    }
+    mismatches = {
+        key: {"expected": value, "actual": contract.get(key)}
+        for key, value in expected.items()
+        if contract.get(key) != value
+    }
+    if mismatches:
+        raise RuntimeError(f"Word日报模板结构已变化，停止写入：{mismatches}")
+    return contract
+
+
+def set_plain_text_control_value(
+    root: ET.Element,
+    tag: str,
+    value: str,
+) -> int:
+    """更新指定标签的纯文本内容控件，保留控件及其格式。"""
+    count = 0
+    tag_attribute = _word_tag("val")
+    for control in root.findall(".//w:sdt", WORD_XML_NAMESPACES):
+        tag_node = control.find("w:sdtPr/w:tag", WORD_XML_NAMESPACES)
+        if tag_node is None or tag_node.get(tag_attribute) != tag:
+            continue
+        text_nodes = control.findall("w:sdtContent//w:t", WORD_XML_NAMESPACES)
+        if not text_nodes:
+            raise RuntimeError(f"Word内容控件没有文本节点：{tag}")
+        text_nodes[0].text = value
+        for node in text_nodes[1:]:
+            node.text = ""
+        count += 1
+    return count
+
+
+def replace_text_after_seq_field(
+    paragraph: ET.Element,
+    value: str,
+) -> None:
+    """保留图表SEQ域与书签，仅替换域结束后的标题文本。"""
+    children = list(paragraph)
+    field_end_index: Optional[int] = None
+    for index, child in enumerate(children):
+        field_node = child.find("w:fldChar", WORD_XML_NAMESPACES)
+        if (
+            child.tag == _word_tag("r")
+            and field_node is not None
+            and field_node.get(_word_tag("fldCharType")) == "end"
+        ):
+            field_end_index = index
+            break
+    if field_end_index is None:
+        raise RuntimeError("Word图表标题缺少SEQ域结束节点")
+
+    post_field_runs = [
+        child
+        for child in children[field_end_index + 1 :]
+        if child.tag == _word_tag("r")
+    ]
+    if not post_field_runs:
+        raise RuntimeError("Word图表标题缺少可复用的标题格式节点")
+    leading_space_run: Optional[ET.Element] = None
+    for run in post_field_runs:
+        run_text = "".join(run.itertext())
+        if leading_space_run is None and run_text and not run_text.strip():
+            leading_space_run = run
+            continue
+        if run_text.strip():
+            style_run = run
+            break
+    else:
+        style_run = post_field_runs[-1]
+
+    for run in post_field_runs:
+        if run is not leading_space_run:
+            paragraph.remove(run)
+
+    remaining_children = list(paragraph)
+    insertion_index = len(remaining_children)
+    if leading_space_run is not None:
+        insertion_index = remaining_children.index(leading_space_run) + 1
+    else:
+        for index, child in enumerate(remaining_children):
+            if index > field_end_index and child.tag != _word_tag("r"):
+                insertion_index = index
+                break
+
+    new_run = ET.Element(_word_tag("r"), dict(style_run.attrib))
+    run_properties = style_run.find("w:rPr", WORD_XML_NAMESPACES)
+    if run_properties is not None:
+        new_run.append(deepcopy(run_properties))
+    lines = str(value).split("\n")
+    for line_index, line in enumerate(lines):
+        if line_index:
+            new_run.append(ET.Element(_word_tag("br")))
+        text_node = ET.SubElement(new_run, _word_tag("t"))
+        text_node.text = line
+    paragraph.insert(insertion_index, new_run)
+
+
+def replace_sequence_title(cell: ET.Element, value: str) -> None:
+    """把图表标题逐行写入模板既有段落，保持标题栏原始高度。"""
+    paragraphs = cell.findall("w:p", WORD_XML_NAMESPACES)
+    if not paragraphs:
+        raise RuntimeError("Word图表标题单元格缺少段落")
+    sequence_paragraph = _sequence_title_paragraph(cell)
+    sequence_index = paragraphs.index(sequence_paragraph)
+    title_paragraphs = paragraphs[sequence_index:]
+    lines = str(value).split("\n")
+    if len(lines) > len(title_paragraphs):
+        raise RuntimeError(
+            "Word图表标题行数超过模板槽位："
+            f"{len(lines)} > {len(title_paragraphs)}"
+        )
+    replace_text_after_seq_field(sequence_paragraph, lines[0])
+    for paragraph, line in zip(title_paragraphs[1:], lines[1:]):
+        text_nodes = paragraph.findall(".//w:t", WORD_XML_NAMESPACES)
+        if not text_nodes:
+            raise RuntimeError("Word图表续行标题缺少文本节点")
+        text_nodes[0].text = line
+        for node in text_nodes[1:]:
+            node.text = ""
+    for paragraph in title_paragraphs[len(lines) :]:
+        for node in paragraph.findall(".//w:t", WORD_XML_NAMESPACES):
+            node.text = ""
+
+
+def _register_word_xml_namespaces(xml_bytes: bytes) -> dict[str, str]:
+    """注册原部件命名空间前缀，避免序列化时生成ns0等新前缀。"""
+    namespaces: dict[str, str] = {}
+    for _, (prefix, uri) in ET.iterparse(
+        io.BytesIO(xml_bytes), events=("start-ns",)
+    ):
+        namespaces.setdefault(prefix, uri)
+        if prefix == "xml":
+            continue
+        try:
+            ET.register_namespace(prefix, uri)
+        except ValueError:
+            continue
+    return namespaces
+
+
+def _serialize_word_xml(root: ET.Element, source_bytes: bytes) -> bytes:
+    source_namespaces = _register_word_xml_namespaces(source_bytes)
+    rendered = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    root_end = rendered.find(b">", rendered.find(b"<", 5))
+    if root_end < 0:
+        raise RuntimeError("Word XML根节点序列化异常")
+    root_start = rendered[:root_end].decode("utf-8")
+    declared_prefixes = {
+        prefix or ""
+        for prefix in re.findall(
+            r"xmlns(?::([A-Za-z_][A-Za-z0-9_.-]*))?=\"[^\"]+\"",
+            root_start,
+        )
+    }
+    missing_declarations = []
+    for prefix, uri in source_namespaces.items():
+        if prefix in declared_prefixes or prefix == "xml":
+            continue
+        name = "xmlns" if not prefix else f"xmlns:{prefix}"
+        missing_declarations.append(f' {name}="{uri}"')
+    if not missing_declarations:
+        return rendered
+    addition = "".join(missing_declarations).encode("utf-8")
+    return rendered[:root_end] + addition + rendered[root_end:]
+
+
+def _direct_table_rows(table: ET.Element) -> list[ET.Element]:
+    return [child for child in table if child.tag == _word_tag("tr")]
+
+
+def _direct_row_cells(row: ET.Element) -> list[ET.Element]:
+    return [child for child in row if child.tag == _word_tag("tc")]
+
+
+def _set_word_cell_text(cell: ET.Element, value: str) -> None:
+    text_nodes = cell.findall(".//w:t", WORD_XML_NAMESPACES)
+    if not text_nodes:
+        raise RuntimeError("Word目标单元格没有文本节点")
+    text_nodes[0].text = value
+    for node in text_nodes[1:]:
+        node.text = ""
+
+
+def _sequence_title_paragraph(cell: ET.Element) -> ET.Element:
+    for paragraph in cell.findall(".//w:p", WORD_XML_NAMESPACES):
+        instruction = "".join(
+            node.text or ""
+            for node in paragraph.findall(
+                ".//w:instrText", WORD_XML_NAMESPACES
+            )
+        )
+        if "SEQ 图表" in instruction:
+            return paragraph
+    raise RuntimeError("Word目标标题单元格缺少SEQ图表域")
+
+
+def _patch_daily_word_document(
+    document_bytes: bytes,
+    run_date: date,
+    index_rows: list[list[str]],
+    chart_titles: list[str],
+    industry_title: str,
+) -> tuple[bytes, list[str]]:
+    root = ET.fromstring(document_bytes)
+    tables = _top_level_word_tables(root)
+    if len(tables) != 18:
+        raise RuntimeError(f"Word主文档表格数量异常：{len(tables)}")
+    if len(index_rows) != 9 or any(len(row) != 12 for row in index_rows):
+        raise RuntimeError("Word图表1必须提供9行、每行12列数据")
+    if len(chart_titles) != 24:
+        raise RuntimeError(f"Word图表标题数量异常：{len(chart_titles)}")
+
+    if set_plain_text_control_value(
+        root, "ReportTitle", f"转债市场日度跟踪{run_date:%Y%m%d}"
+    ) != 1:
+        raise RuntimeError("Word模板中的ReportTitle内容控件数量异常")
+
+    index_table_rows = _direct_table_rows(tables[1])
+    if len(index_table_rows) != 12:
+        raise RuntimeError(f"Word图表1行数异常：{len(index_table_rows)}")
+    for row_element, values in zip(index_table_rows[2:11], index_rows):
+        cells = _direct_row_cells(row_element)
+        if len(cells) != 12:
+            raise RuntimeError(f"Word图表1列数异常：{len(cells)}")
+        for cell, value in zip(cells, values):
+            _set_word_cell_text(cell, value)
+
+    title_index = 0
+    for table in tables[2:14]:
+        rows = _direct_table_rows(table)
+        if not rows:
+            raise RuntimeError("Word双图表格缺少标题行")
+        cells = _direct_row_cells(rows[0])
+        if len(cells) < 3:
+            raise RuntimeError(f"Word双图标题行列数异常：{len(cells)}")
+        for cell_index in (0, 2):
+            replace_sequence_title(cells[cell_index], chart_titles[title_index])
+            title_index += 1
+    if title_index != 24:
+        raise RuntimeError(f"Word双图标题实际写入数量异常：{title_index}")
+
+    industry_rows = _direct_table_rows(tables[14])
+    industry_cells = _direct_row_cells(industry_rows[0])
+    replace_sequence_title(industry_cells[0], industry_title)
+
+    relationship_ids: list[str] = []
+    for table in tables[2:15]:
+        for blip in table.findall(".//a:blip", WORD_XML_NAMESPACES):
+            relationship_id = blip.get(_relationship_tag("embed"))
+            if relationship_id:
+                relationship_ids.append(relationship_id)
+    if len(relationship_ids) != 25:
+        raise RuntimeError(f"Word日报图片槽位数量异常：{len(relationship_ids)}")
+    return _serialize_word_xml(root, document_bytes), relationship_ids
+
+
+def _patch_daily_word_header(header_bytes: bytes, run_date: date) -> bytes:
+    root = ET.fromstring(header_bytes)
+    updated = set_plain_text_control_value(
+        root, "ReportDate", f"{run_date:%Y年%m月%d日}"
+    )
+    if updated != 2:
+        raise RuntimeError(f"Word模板中的ReportDate内容控件数量异常：{updated}")
+    return _serialize_word_xml(root, header_bytes)
+
+
+def _resolve_word_media_members(
+    relationship_bytes: bytes,
+    relationship_ids: list[str],
+) -> list[str]:
+    root = ET.fromstring(relationship_bytes)
+    by_id = {
+        relationship.get("Id"): relationship.get("Target")
+        for relationship in root.findall(
+            _package_relationship_tag("Relationship")
+        )
+    }
+    media_members: list[str] = []
+    for relationship_id in relationship_ids:
+        target = by_id.get(relationship_id)
+        if not target:
+            raise RuntimeError(f"Word图片关系不存在：{relationship_id}")
+        member = posixpath.normpath(posixpath.join("word", target))
+        if not member.startswith("word/media/"):
+            raise RuntimeError(
+                f"Word图片关系未指向媒体部件：{relationship_id} -> {target}"
+            )
+        media_members.append(member)
+    if len(set(media_members)) != len(media_members):
+        raise RuntimeError("Word日报图片槽位存在重复媒体目标")
+    return media_members
+
+
+def _write_patched_word_package(
+    template_path: Path,
+    output_path: Path,
+    run_date: date,
+    index_rows: list[list[str]],
+    chart_titles: list[str],
+    industry_title: str,
+    image_paths: list[Path],
+) -> None:
+    with zipfile.ZipFile(template_path, "r") as source:
+        document_bytes = source.read("word/document.xml")
+        header_bytes = source.read("word/header3.xml")
+        relationship_bytes = source.read("word/_rels/document.xml.rels")
+        patched_document, relationship_ids = _patch_daily_word_document(
+            document_bytes,
+            run_date,
+            index_rows,
+            chart_titles,
+            industry_title,
+        )
+        patched_header = _patch_daily_word_header(header_bytes, run_date)
+        media_members = _resolve_word_media_members(
+            relationship_bytes, relationship_ids
+        )
+        if len(image_paths) != len(media_members):
+            raise RuntimeError(
+                "Word图片输入数量与模板槽位不一致："
+                f"{len(image_paths)} != {len(media_members)}"
+            )
+        replacements = {
+            "word/document.xml": patched_document,
+            "word/header3.xml": patched_header,
+            **{
+                member: image_path.read_bytes()
+                for member, image_path in zip(media_members, image_paths)
+            },
+        }
+        with zipfile.ZipFile(output_path, "w") as destination:
+            for information in source.infolist():
+                destination.writestr(
+                    information,
+                    replacements.get(information.filename, source.read(information)),
+                )
+
+
+def validate_generated_daily_word_report(
+    output_path: Path,
+    run_date: date,
+    template_member_names: tuple[str, ...],
+    index_rows: list[list[str]],
+    chart_titles: list[str],
+    industry_title: str,
+) -> None:
+    """验证生成文件的结构与全部动态槽位。"""
+    with zipfile.ZipFile(output_path) as package:
+        broken_member = package.testzip()
+        if broken_member is not None:
+            raise RuntimeError(f"Word输出压缩包损坏：{broken_member}")
+        if tuple(package.namelist()) != template_member_names:
+            raise RuntimeError("Word输出部件清单与模板不一致")
+        document_root = ET.fromstring(package.read("word/document.xml"))
+        header_root = ET.fromstring(package.read("word/header3.xml"))
+        tables = _top_level_word_tables(document_root)
+        if len(tables) != 18:
+            raise RuntimeError(f"Word输出表格数量异常：{len(tables)}")
+        relationship_ids = [
+            blip.get(_relationship_tag("embed"))
+            for table in tables[2:15]
+            for blip in table.findall(".//a:blip", WORD_XML_NAMESPACES)
+        ]
+        if relationship_ids != [f"rId{number}" for number in range(14, 39)]:
+            raise RuntimeError("Word输出图片关系顺序异常")
+        sequence_count = sum(
+            "SEQ 图表" in "".join(
+                node.text or ""
+                for node in paragraph.findall(
+                    ".//w:instrText", WORD_XML_NAMESPACES
+                )
+            )
+            for paragraph in document_root.findall(
+                ".//w:p", WORD_XML_NAMESPACES
+            )
+        )
+        if sequence_count != 26:
+            raise RuntimeError(f"Word输出图表序号域数量异常：{sequence_count}")
+
+        document_text = "".join(document_root.itertext())
+        header_text = "".join(header_root.itertext())
+        required_text = [
+            f"转债市场日度跟踪{run_date:%Y%m%d}",
+            industry_title,
+            *(title.replace("\n", "") for title in chart_titles),
+        ]
+        missing_text = [text for text in required_text if text not in document_text]
+        if missing_text:
+            raise RuntimeError(f"Word输出缺少动态标题：{missing_text}")
+        expected_date = f"{run_date:%Y年%m月%d日}"
+        if header_text.count(expected_date) != 2:
+            raise RuntimeError(f"Word输出日期内容控件异常：{expected_date}")
+
+        actual_index_rows = [
+            ["".join(cell.itertext()) for cell in _direct_row_cells(row)]
+            for row in _direct_table_rows(tables[1])[2:11]
+        ]
+        if actual_index_rows != index_rows:
+            raise RuntimeError("Word输出图表1数据与输入不一致")
+
+
+def build_daily_word_report(
+    run_date: date,
+    output_dir: Path,
+    index_performance: pd.DataFrame,
+    chart_titles: list[str],
+    industry_performance: pd.DataFrame,
+    industry_chart_path: Path,
+    template_path: Path = DAILY_WORD_TEMPLATE_PATH,
+) -> Path:
+    """按冻结模板生成当日 Word 报告，不调用 Word COM。"""
+    if len(chart_titles) != 24:
+        raise RuntimeError(f"Word图表标题数量异常：{len(chart_titles)}")
+    contract = validate_daily_word_template(template_path)
+    chart_paths = [
+        output_dir / f"{sequence:02d}_{label}.png"
+        for sequence, label, _, _ in SMALL_CHART_EXPORT_SPECS
+    ]
+    image_paths = [*chart_paths, industry_chart_path]
+    missing_images = [str(path) for path in image_paths if not path.is_file()]
+    if missing_images:
+        raise FileNotFoundError(f"Word报告缺少图片：{missing_images}")
+
+    index_rows = build_word_index_table_rows(index_performance)
+    industry_title = build_industry_rotation_title(industry_performance)
+    output_path = (
+        output_dir / f"【华创固收】转债市场日度跟踪{run_date:%Y%m%d}.docx"
+    )
+    temporary_path = output_path.with_name(
+        f".{output_path.stem}.{os.getpid()}.tmp.docx"
+    )
+    try:
+        _write_patched_word_package(
+            template_path,
+            temporary_path,
+            run_date,
+            index_rows,
+            chart_titles,
+            industry_title,
+            image_paths,
+        )
+        validate_generated_daily_word_report(
+            temporary_path,
+            run_date,
+            contract["memberNames"],
+            index_rows,
+            chart_titles,
+            industry_title,
+        )
+        os.replace(temporary_path, output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return output_path
 
 
 class ConsoleProgress:
@@ -9000,6 +9644,15 @@ def run(
         valuation_source=valuation_source,
     )
     write_daily_commentary(fuguo_daily_text, fuguo_daily_text_path)
+    report_progress(97, "填充 Word 报告")
+    word_report_path = build_daily_word_report(
+        run_date,
+        output_dir,
+        index_performance,
+        long_chart_titles,
+        industry_performance,
+        industry_performance_png,
+    )
     report_progress(98, "整理输出文件")
     remove_obsolete_outputs(output_dir, workbook_path)
 
@@ -9241,6 +9894,7 @@ def run(
         "报告配色": {"红": RED, "蓝": BLUE},
         "Excel底稿": str(workbook_path),
         "日报点评": str(commentary_path),
+        "Word报告": str(word_report_path),
         "富国日报图片": str(fuguo_daily_png),
         "富国日报点评": str(fuguo_daily_text_path),
     }
