@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import pythoncom
+from scipy.optimize import curve_fit
 import win32com.client
 
 with redirect_stdout(io.StringIO()):
@@ -45,10 +46,11 @@ with redirect_stdout(io.StringIO()):
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 DAILY_WORD_TEMPLATE_PATH = (
-    WORKSPACE / "【华创固收】转债市场日度跟踪20260831.docx"
+    WORKSPACE
+    / "assets/templates/【华创固收】转债市场日度跟踪20260901.docx"
 )
 DAILY_WORD_TEMPLATE_SHA256 = (
-    "922AA1FC6DA6C384E264A7077CBB7CE02FAE9C7501539D4E8B74CC76C4303FB3"
+    "6FB572203C57936BAFD3D58940D114D18F0E024DE6329ED4B540931413ECB7B9"
 )
 WORD_XML_NAMESPACES = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -277,6 +279,77 @@ ETF_SHARE_WSD_FORMULA = (
     '=@WSD(B4:C4,"unit_fundshare_total",B1,B2,'
     '"TradingCalendar=SSE","rptType=1","Version=1",'
     '"cols=2;rows=1614")'
+)
+JS_DAILY_BASE_SHEET_COLUMNS = {
+    "平价分类转股溢价率": (
+        "日期",
+        "平价80以下",
+        "平价80-95",
+        "平价95-110",
+        "平价110-125",
+        "平价125以上",
+    ),
+    "收盘价分位数统计": (
+        "日期",
+        "0.05",
+        "0.25",
+        "0.5",
+        "0.75",
+        "0.8",
+        "0.9",
+        "均值",
+    ),
+    "百元溢价率": (
+        "日期",
+        "百元平价拟合溢价率",
+        "百元平价拟合溢价率（1-5.5年）",
+        "次新券转股溢价率均值",
+    ),
+    "JS全样本": (
+        "日期",
+        "平价算术平均",
+        "纯债价值算术平均",
+        "纯债溢价率算术平均",
+        "隐含波动率算术平均",
+    ),
+    "JS平底分类余额加权转股溢价率": ("日期", "偏股", "偏债", "平衡"),
+    "JS偏债型余额YTM": (
+        "日期",
+        "YTM余额加权",
+        "YTM中位数",
+        "AAA评级YTM中位数",
+    ),
+}
+JS_DAILY_SECTOR_ORDER = ("周期", "制造", "科技", "消费", "金融")
+JS_DAILY_SECTOR_SHEET_METRICS = (
+    ("板块转股溢价率", "转股溢价率"),
+    ("板块价格", "收盘价"),
+    ("板块平价", "平价"),
+    ("板块纯债溢价率", "纯债溢价率"),
+)
+JS_DAILY_SECTOR_SHEET_COLUMNS = {
+    sheet_name: ("日期", *JS_DAILY_SECTOR_ORDER)
+    for sheet_name, _ in JS_DAILY_SECTOR_SHEET_METRICS
+}
+JS_DAILY_SHEET_COLUMNS = {
+    **JS_DAILY_BASE_SHEET_COLUMNS,
+    **JS_DAILY_SECTOR_SHEET_COLUMNS,
+}
+JS_DAILY_REQUIRED_COLUMNS = (
+    "交易日期",
+    "交易状态",
+    "余额",
+    "平价",
+    "纯债价值",
+    "纯债溢价率",
+    "隐含波动率",
+    "转股溢价率",
+    "平价底价溢价率",
+    "YTM",
+    "剩余期限",
+    "收盘价",
+    "债项评级",
+    "换手率",
 )
 
 WORKBOOK_BUILDER_SOURCE = r'''import fs from "node:fs/promises";
@@ -2094,6 +2167,73 @@ if (previewDirArg) {
     await fs.writeFile(path.join(previewDirArg, `${sheetName}.png`), new Uint8Array(await preview.arrayBuffer()));
   }
 }
+
+await fs.mkdir(path.dirname(outputPath), { recursive: true });
+const output = await SpreadsheetFile.exportXlsx(workbook);
+await output.save(outputPath);'''
+
+JS_DAILY_WORKBOOK_BUILDER_SOURCE = r'''import fs from "node:fs/promises";
+import path from "node:path";
+import { SpreadsheetFile, Workbook } from "@oai/artifact-tool";
+
+const [, , payloadPath, outputPath] = process.argv;
+if (!payloadPath || !outputPath) {
+  throw new Error("用法：node build_js_daily_workbook.mjs <payload.json> <output.xlsx>");
+}
+
+const payload = JSON.parse(await fs.readFile(payloadPath, "utf8"));
+const workbook = Workbook.create();
+
+for (const block of payload.sheets) {
+  const sheet = workbook.worksheets.add(block.name);
+  sheet.showGridLines = false;
+  sheet.freezePanes.freezeRows(1);
+  sheet.freezePanes.freezeColumns(1);
+  const rows = block.rows.map((row) => [new Date(`${row[0]}T00:00:00`), ...row.slice(1)]);
+  sheet.getRangeByIndexes(0, 0, 1, block.columns.length).values = [block.columns];
+  sheet.getRangeByIndexes(0, 0, 1, block.columns.length).format = {
+    font: { name: "KaiTi_GB2312", bold: true, color: "#000000", size: 10 },
+    horizontalAlignment: "center",
+    verticalAlignment: "center",
+    borders: { preset: "bottom", style: "thin", color: "#000000" },
+  };
+  sheet.getRangeByIndexes(0, 0, 1, block.columns.length).format.rowHeight = 20;
+  if (rows.length > 0) {
+    const body = sheet.getRangeByIndexes(1, 0, rows.length, block.columns.length);
+    body.values = rows;
+    body.format = {
+      font: { name: "KaiTi_GB2312", color: "#000000", size: 10 },
+      verticalAlignment: "center",
+    };
+    sheet.getRangeByIndexes(1, 0, rows.length, 1).format.numberFormat = "yyyy-mm-dd";
+    if (block.columns.length > 1) {
+      sheet.getRangeByIndexes(1, 1, rows.length, block.columns.length - 1).format.numberFormat = "0.00";
+    }
+  }
+  for (let column = 0; column < block.columns.length; column += 1) {
+    const hundredPremiumWidths = [14, 22, 30, 24];
+    const width = block.name === "百元溢价率"
+      ? hundredPremiumWidths[column]
+      : (column === 0 ? 14 : 18);
+    sheet.getRangeByIndexes(0, column, Math.max(1, rows.length + 1), 1).format.columnWidth = width;
+  }
+}
+
+const summary = await workbook.inspect({
+  kind: "sheet,table",
+  maxChars: 2500,
+  tableMaxRows: 4,
+  tableMaxCols: 8,
+});
+console.log(summary.ndjson);
+
+const errors = await workbook.inspect({
+  kind: "match",
+  searchTerm: "#REF!|#DIV/0!|#VALUE!|#NAME\\?|#N/A",
+  options: { useRegex: true, maxResults: 50 },
+  summary: "JS日报公式错误扫描",
+});
+console.log(errors.ndjson);
 
 await fs.mkdir(path.dirname(outputPath), { recursive: true });
 const output = await SpreadsheetFile.exportXlsx(workbook);
@@ -4268,6 +4408,369 @@ def fetch_parity_interval_premium_series(
         ),
     }
     return result, source
+
+
+def _js_balance_weighted_mean(data: pd.DataFrame, value_column: str) -> float:
+    """按有效正余额计算旧 JS 口径的余额加权均值。"""
+    values = pd.to_numeric(data[value_column], errors="coerce")
+    weights = pd.to_numeric(data["余额"], errors="coerce")
+    valid = (
+        values.notna()
+        & weights.notna()
+        & np.isfinite(values)
+        & np.isfinite(weights)
+        & weights.gt(0)
+    )
+    if not valid.any():
+        return np.nan
+    return float((values.loc[valid] * weights.loc[valid]).sum() / weights.loc[valid].sum())
+
+
+def _js_inverse_cubic(
+    plain: np.ndarray | float,
+    a: float,
+    b: float,
+    c: float,
+    d: float,
+) -> np.ndarray | float:
+    plain_array = np.asarray(plain)
+    return (
+        a / np.power(plain_array, 3)
+        + b / np.power(plain_array, 2)
+        + c / plain_array
+        + d
+    )
+
+
+def _fit_js_inverse_cubic_hundred(
+    daily: pd.DataFrame,
+    remain_range: Optional[tuple[float, float]] = None,
+) -> float:
+    """沿用旧 JS 反三次口径计算单日平价100处拟合溢价率。"""
+    fit_columns = ["平价", "转股溢价率"]
+    if remain_range is not None:
+        fit_columns.append("剩余期限")
+    work = daily[fit_columns].copy()
+    premium = pd.to_numeric(work["转股溢价率"], errors="coerce")
+    low, high = premium.quantile(0.03), premium.quantile(0.97)
+    work = work.loc[premium.gt(low) & premium.lt(high)]
+    if remain_range is not None:
+        lower, upper = remain_range
+        work = work.loc[
+            work["剩余期限"].gt(lower) & work["剩余期限"].lt(upper)
+        ]
+    work = work.replace(0, np.nan).dropna(subset=fit_columns)
+    if len(work) < 5:
+        return np.nan
+    try:
+        plain = work["平价"].to_numpy(dtype=float)
+        premium = work["转股溢价率"].to_numpy(dtype=float)
+        parameters, _ = curve_fit(
+            _js_inverse_cubic, plain, premium, maxfev=20_000
+        )
+        return float(_js_inverse_cubic(100.0, *parameters))
+    except Exception:
+        return np.nan
+
+
+def aggregate_js_hundred_premium_series(
+    data: pd.DataFrame,
+    subnew_bond: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """计算反三次百元溢价率、期限样本拟合值及次新券均值。"""
+    required = {
+        "交易日期",
+        "交易状态",
+        "平价",
+        "转股溢价率",
+        "换手率",
+        "剩余期限",
+    }
+    missing = required - set(data.columns)
+    if missing:
+        raise RuntimeError(f"JS百元溢价率输入缺少字段：{sorted(missing)}")
+
+    sample = data.loc[:, list(required)].copy()
+    sample["交易日期"] = pd.to_datetime(
+        sample["交易日期"], errors="coerce"
+    ).dt.normalize()
+    for column in ("平价", "转股溢价率", "换手率", "剩余期限"):
+        sample[column] = pd.to_numeric(sample[column], errors="coerce")
+        sample.loc[~np.isfinite(sample[column]), column] = np.nan
+    sample = sample.loc[
+        sample["交易日期"].notna()
+        & sample["交易状态"].astype(str).str.strip().eq("交易")
+        & sample["平价"].between(70.0, 130.0, inclusive="both")
+        & sample["换手率"].le(50.0)
+    ].copy()
+    if sample.empty:
+        raise RuntimeError("JS百元溢价率没有有效拟合样本")
+
+    rows: list[dict[str, object]] = []
+    for trade_date, daily in sample.groupby("交易日期", sort=True):
+        rows.append(
+            {
+                "日期": trade_date,
+                "百元平价拟合溢价率": _fit_js_inverse_cubic_hundred(daily),
+                "百元平价拟合溢价率（1-5.5年）": _fit_js_inverse_cubic_hundred(
+                    daily, remain_range=(1.0, 5.5)
+                ),
+            }
+        )
+    result = pd.DataFrame(rows)
+    if subnew_bond is None:
+        result["次新券转股溢价率均值"] = np.nan
+    else:
+        required_subnew = {"交易日期", "次新券平均转股溢价率"}
+        missing_subnew = required_subnew - set(subnew_bond.columns)
+        if missing_subnew:
+            raise RuntimeError(
+                f"JS百元溢价率次新券输入缺少字段：{sorted(missing_subnew)}"
+            )
+        subnew = subnew_bond.loc[:, list(required_subnew)].copy()
+        subnew["日期"] = pd.to_datetime(
+            subnew.pop("交易日期"), errors="coerce"
+        ).dt.normalize()
+        subnew["次新券转股溢价率均值"] = pd.to_numeric(
+            subnew.pop("次新券平均转股溢价率"), errors="coerce"
+        )
+        subnew = subnew.dropna(subset=["日期"]).drop_duplicates(
+            "日期", keep="last"
+        )
+        result = result.merge(subnew, on="日期", how="left")
+    return result.loc[:, list(JS_DAILY_SHEET_COLUMNS["百元溢价率"])].sort_values(
+        "日期"
+    ).reset_index(drop=True)
+
+
+def aggregate_js_sector_mean_metrics(
+    sector_mean_metrics: pd.DataFrame,
+) -> dict[str, pd.DataFrame]:
+    """将日报五大板块均值复用为JS日报四张宽表。"""
+    required = {"交易日期"}
+    required.update(
+        f"{metric}_{sector}"
+        for _, metric in JS_DAILY_SECTOR_SHEET_METRICS
+        for sector in JS_DAILY_SECTOR_ORDER
+    )
+    missing = required - set(sector_mean_metrics.columns)
+    if missing:
+        raise RuntimeError(f"JS板块宽表输入缺少字段：{sorted(missing)}")
+
+    data = sector_mean_metrics.loc[:, list(required)].copy()
+    data["交易日期"] = pd.to_datetime(
+        data["交易日期"], errors="coerce"
+    ).dt.normalize()
+    value_columns = [column for column in required if column != "交易日期"]
+    for column in value_columns:
+        data[column] = pd.to_numeric(data[column], errors="coerce")
+        data.loc[~np.isfinite(data[column]), column] = np.nan
+    data = (
+        data.dropna(subset=["交易日期"])
+        .drop_duplicates("交易日期", keep="last")
+        .sort_values("交易日期")
+        .reset_index(drop=True)
+    )
+    if data.empty:
+        raise RuntimeError("JS板块宽表没有有效日期数据")
+
+    result: dict[str, pd.DataFrame] = {}
+    for sheet_name, metric in JS_DAILY_SECTOR_SHEET_METRICS:
+        frame = pd.DataFrame({"日期": data["交易日期"]})
+        for sector in JS_DAILY_SECTOR_ORDER:
+            frame[sector] = data[f"{metric}_{sector}"]
+        result[sheet_name] = frame.loc[
+            :, list(JS_DAILY_SECTOR_SHEET_COLUMNS[sheet_name])
+        ]
+    return result
+
+
+def aggregate_js_daily_metrics(
+    data: pd.DataFrame,
+    subnew_bond: Optional[pd.DataFrame] = None,
+    sector_mean_metrics: Optional[pd.DataFrame] = None,
+) -> dict[str, pd.DataFrame]:
+    """复现旧 JS 日报指标，不应用高价高溢价“剔妖”限制。"""
+    required = set(JS_DAILY_REQUIRED_COLUMNS)
+    missing = required - set(data.columns)
+    if missing:
+        raise RuntimeError(f"JS日报输入缺少字段：{sorted(missing)}")
+
+    base = data.loc[:, list(JS_DAILY_REQUIRED_COLUMNS)].copy()
+    base["交易日期"] = pd.to_datetime(
+        base["交易日期"], errors="coerce"
+    ).dt.normalize()
+    numeric_columns = [
+        column
+        for column in JS_DAILY_REQUIRED_COLUMNS
+        if column not in {"交易日期", "交易状态", "债项评级"}
+    ]
+    for column in numeric_columns:
+        base[column] = pd.to_numeric(base[column], errors="coerce")
+        base.loc[~np.isfinite(base[column]), column] = np.nan
+    base = base.loc[
+        base["交易日期"].notna()
+        & base["交易状态"].astype(str).str.strip().eq("交易")
+    ].copy()
+    if base.empty:
+        raise RuntimeError("JS日报没有交易状态为“交易”的有效样本")
+
+    full_rows: list[dict[str, object]] = []
+    parity_rows: list[dict[str, object]] = []
+    floor_rows: list[dict[str, object]] = []
+    ytm_rows: list[dict[str, object]] = []
+    close_rows: list[dict[str, object]] = []
+    for trade_date, daily in base.groupby("交易日期", sort=True):
+        full_rows.append(
+            {
+                "日期": trade_date,
+                "平价算术平均": float(daily["平价"].mean()),
+                "纯债价值算术平均": float(daily["纯债价值"].mean()),
+                "纯债溢价率算术平均": float(daily["纯债溢价率"].mean()),
+                "隐含波动率算术平均": float(daily["隐含波动率"].mean()),
+            }
+        )
+
+        parity_buckets = {
+            "平价80以下": daily["平价"].le(80.0),
+            "平价80-95": daily["平价"].gt(80.0) & daily["平价"].le(95.0),
+            "平价95-110": daily["平价"].gt(95.0) & daily["平价"].le(110.0),
+            "平价110-125": daily["平价"].gt(110.0) & daily["平价"].le(125.0),
+            "平价125以上": daily["平价"].gt(125.0),
+        }
+        parity_row: dict[str, object] = {"日期": trade_date}
+        for label, mask in parity_buckets.items():
+            parity_row[label] = _js_balance_weighted_mean(
+                daily.loc[mask], "转股溢价率"
+            )
+        parity_rows.append(parity_row)
+
+        # 旧 JS 口径中，仅以下两张表限制剩余期限至少1年。
+        remain = daily.loc[daily["剩余期限"].ge(1.0)].copy()
+        floor_buckets = {
+            "偏股": remain["平价底价溢价率"].gt(20.0),
+            "偏债": remain["平价底价溢价率"].lt(-20.0),
+            "平衡": remain["平价底价溢价率"].between(
+                -20.0, 20.0, inclusive="both"
+            ),
+        }
+        floor_row: dict[str, object] = {"日期": trade_date}
+        for label, mask in floor_buckets.items():
+            floor_row[label] = _js_balance_weighted_mean(
+                remain.loc[mask], "转股溢价率"
+            )
+        floor_rows.append(floor_row)
+
+        bond = remain.loc[remain["平价底价溢价率"].lt(-20.0)].copy()
+        bond_ytm = pd.to_numeric(bond["YTM"], errors="coerce").dropna()
+        aaa_ytm = pd.to_numeric(
+            remain.loc[
+                remain["债项评级"].astype(str).str.strip().str.upper().eq("AAA"),
+                "YTM",
+            ],
+            errors="coerce",
+        ).dropna()
+        ytm_rows.append(
+            {
+                "日期": trade_date,
+                "YTM余额加权": _js_balance_weighted_mean(bond, "YTM"),
+                "YTM中位数": (
+                    float(bond_ytm.quantile(0.5)) if not bond_ytm.empty else np.nan
+                ),
+                "AAA评级YTM中位数": (
+                    float(aaa_ytm.quantile(0.5)) if not aaa_ytm.empty else np.nan
+                ),
+            }
+        )
+
+        close = pd.to_numeric(daily["收盘价"], errors="coerce").dropna()
+        quantiles = close.quantile([0.05, 0.25, 0.5, 0.75, 0.8, 0.9])
+        close_rows.append(
+            {
+                "日期": trade_date,
+                "0.05": float(quantiles.loc[0.05]) if not close.empty else np.nan,
+                "0.25": float(quantiles.loc[0.25]) if not close.empty else np.nan,
+                "0.5": float(quantiles.loc[0.5]) if not close.empty else np.nan,
+                "0.75": float(quantiles.loc[0.75]) if not close.empty else np.nan,
+                "0.8": float(quantiles.loc[0.8]) if not close.empty else np.nan,
+                "0.9": float(quantiles.loc[0.9]) if not close.empty else np.nan,
+                "均值": float(close.mean()) if not close.empty else np.nan,
+            }
+        )
+
+    rows_by_sheet = {
+        "JS全样本": full_rows,
+        "平价分类转股溢价率": parity_rows,
+        "JS平底分类余额加权转股溢价率": floor_rows,
+        "JS偏债型余额YTM": ytm_rows,
+        "收盘价分位数统计": close_rows,
+        "百元溢价率": aggregate_js_hundred_premium_series(
+            base, subnew_bond
+        ).to_dict("records"),
+    }
+    result: dict[str, pd.DataFrame] = {}
+    for sheet_name, columns in JS_DAILY_BASE_SHEET_COLUMNS.items():
+        frame = pd.DataFrame(rows_by_sheet[sheet_name], columns=columns)
+        result[sheet_name] = frame.sort_values("日期").reset_index(drop=True)
+    if sector_mean_metrics is None:
+        raise RuntimeError("JS日报缺少五大板块日度均值数据")
+    result.update(aggregate_js_sector_mean_metrics(sector_mean_metrics))
+    return {sheet_name: result[sheet_name] for sheet_name in JS_DAILY_SHEET_COLUMNS}
+
+
+def fetch_js_daily_metrics(
+    run_date: date,
+    subnew_bond: Optional[pd.DataFrame] = None,
+    sector_mean_metrics: Optional[pd.DataFrame] = None,
+) -> dict[str, pd.DataFrame]:
+    """读取2019年以来月度个券 Parquet，并生成旧 JS 日报指标。"""
+    end_month = f"{run_date:%Y%m}"
+    parquet_paths = sorted(
+        path
+        for path in CB_PARQUET_ROOT.glob("20*/20*.parquet")
+        if "201901" <= path.stem <= end_month
+    )
+    if not parquet_paths:
+        raise FileNotFoundError("未找到2019年以来的月度转债 Parquet")
+
+    frames: list[pd.DataFrame] = []
+    for parquet_path in parquet_paths:
+        try:
+            frame = pd.read_parquet(
+                parquet_path, columns=list(JS_DAILY_REQUIRED_COLUMNS)
+            ).copy()
+        except Exception as exc:
+            raise RuntimeError(f"读取 JS 日报月度数据失败：{parquet_path}") from exc
+        frame["交易日期"] = pd.to_datetime(
+            frame["交易日期"], errors="coerce"
+        ).dt.normalize()
+        frame = frame.loc[
+            frame["交易日期"].between(
+                pd.Timestamp(VALUATION_START_DATE),
+                pd.Timestamp(run_date),
+                inclusive="both",
+            )
+        ]
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        raise RuntimeError("月度转债 Parquet 中没有2019年以来的 JS 日报样本")
+
+    panel = pd.concat(frames, ignore_index=True)
+    trading_dates = panel.loc[
+        panel["交易状态"].astype(str).str.strip().eq("交易"), "交易日期"
+    ].dropna()
+    latest_date = pd.Timestamp(trading_dates.max()).date()
+    if latest_date != run_date:
+        raise RuntimeError(
+            f"JS日报个券数据未更新至 {run_date:%Y-%m-%d}，"
+            f"当前最新日期：{latest_date:%Y-%m-%d}"
+        )
+    if subnew_bond is None:
+        subnew_bond, _ = fetch_subnew_bond_series(run_date)
+    if sector_mean_metrics is None:
+        sector_mean_metrics, _ = fetch_sector_mean_metrics(run_date)
+    return aggregate_js_daily_metrics(panel, subnew_bond, sector_mean_metrics)
 
 
 def fetch_equity_bond_group_valuation_series(
@@ -8738,14 +9241,96 @@ def build_workbook(
     enforce_industry_history_workbook_layout(output_path)
 
 
-def enforce_industry_history_workbook_layout(workbook_path: Path) -> None:
-    """确保四张行业历史表冻结首行首列。"""
-    sheet_names = {
-        "行业收盘价历史",
-        "行业平价历史",
-        "行业转股溢价率历史",
-        "行业纯债溢价率历史",
-    }
+def build_js_daily_workbook(
+    metrics: dict[str, pd.DataFrame], output_path: Path
+) -> None:
+    """通过 bundled artifact-tool 生成仅含结果的独立 JS 日报底稿。"""
+    for dependency in (BUNDLED_NODE, BUNDLED_NODE_MODULES):
+        if not dependency.exists():
+            raise FileNotFoundError(f"生成 Excel 所需依赖不存在：{dependency}")
+
+    sheets: list[dict[str, object]] = []
+    for sheet_name, expected_columns in JS_DAILY_SHEET_COLUMNS.items():
+        if sheet_name not in metrics:
+            raise RuntimeError(f"JS日报缺少工作表数据：{sheet_name}")
+        frame = metrics[sheet_name].copy()
+        if tuple(frame.columns) != expected_columns:
+            raise RuntimeError(
+                f"JS日报工作表“{sheet_name}”字段异常：{frame.columns.tolist()}"
+            )
+        frame["日期"] = pd.to_datetime(frame["日期"], errors="coerce").dt.normalize()
+        if frame["日期"].isna().any():
+            raise RuntimeError(f"JS日报工作表“{sheet_name}”包含无效日期")
+        if not frame["日期"].is_monotonic_increasing:
+            raise RuntimeError(f"JS日报工作表“{sheet_name}”日期不是正序")
+        rows: list[list[object]] = []
+        for values in frame.itertuples(index=False, name=None):
+            row: list[object] = [f"{pd.Timestamp(values[0]):%Y-%m-%d}"]
+            row.extend(
+                None if pd.isna(value) else float(value) for value in values[1:]
+            )
+            rows.append(row)
+        sheets.append(
+            {
+                "name": sheet_name,
+                "columns": list(expected_columns),
+                "rows": rows,
+            }
+        )
+
+    payload = {"sheets": sheets}
+    output_path = Path(output_path)
+    with tempfile.TemporaryDirectory(prefix="js_daily_workbook_") as temp_dir_text:
+        temp_dir = Path(temp_dir_text)
+        payload_path = temp_dir / "payload.json"
+        builder_path = temp_dir / "build_js_daily_workbook.mjs"
+        node_modules_link = temp_dir / "node_modules"
+        payload_path.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        builder_path.write_text(JS_DAILY_WORKBOOK_BUILDER_SOURCE, encoding="utf-8")
+        subprocess.run(
+            [
+                "cmd.exe",
+                "/c",
+                "mklink",
+                "/J",
+                str(node_modules_link),
+                str(BUNDLED_NODE_MODULES),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        result = subprocess.run(
+            [
+                str(BUNDLED_NODE),
+                str(builder_path),
+                str(payload_path),
+                str(output_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "JS日报 Excel 生成失败：\n"
+                + (result.stdout or "")
+                + (result.stderr or "")
+            )
+    enforce_workbook_freeze_first_row_and_column(
+        output_path, set(JS_DAILY_SHEET_COLUMNS)
+    )
+
+
+def enforce_workbook_freeze_first_row_and_column(
+    workbook_path: Path, sheet_names: set[str]
+) -> None:
+    """确保指定工作表冻结首行首列。"""
+    if not sheet_names:
+        raise ValueError("冻结窗格工作表列表不能为空")
     main_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     office_rel_ns = (
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -8783,7 +9368,7 @@ def enforce_industry_history_workbook_layout(workbook_path: Path) -> None:
 
         if len(targets) != len(sheet_names):
             raise RuntimeError(
-                "行业历史底稿缺少工作表："
+                "底稿缺少需冻结的工作表："
                 f"期望{len(sheet_names)}张，实际定位{len(targets)}张"
             )
 
@@ -8853,6 +9438,19 @@ def enforce_industry_history_workbook_layout(workbook_path: Path) -> None:
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
+
+
+def enforce_industry_history_workbook_layout(workbook_path: Path) -> None:
+    """确保四张行业历史表冻结首行首列。"""
+    enforce_workbook_freeze_first_row_and_column(
+        workbook_path,
+        {
+            "行业收盘价历史",
+            "行业平价历史",
+            "行业转股溢价率历史",
+            "行业纯债溢价率历史",
+        },
+    )
 
 
 def _commentary_direction(
@@ -9568,6 +10166,9 @@ def run(
         fetch_equity_bond_weighted_series(run_date)
     )
     subnew_bond, subnew_bond_source = fetch_subnew_bond_series(run_date)
+    js_daily_metrics = fetch_js_daily_metrics(
+        run_date, subnew_bond, sector_mean_metrics
+    )
     report_progress(55, "数据读取完成")
 
     market_png = output_dir / "沪深两市融资融券余额.png"
@@ -9599,6 +10200,7 @@ def run(
     overview_png = output_dir / "主要指数与市场表现组合图.png"
     fuguo_daily_png = output_dir / "富国日报.png"
     workbook_path = output_dir / f"转债日报市场数据底稿_{run_date:%Y%m%d}.xlsx"
+    js_daily_workbook_path = output_dir / f"JS日报_{run_date:%Y%m%d}.xlsx"
     commentary_path = output_dir / f"转债日报点评_{run_date:%Y%m%d}.txt"
     fuguo_daily_text_path = output_dir / "富国日报.txt"
 
@@ -9820,6 +10422,8 @@ def run(
         market_start_date,
         workbook_path,
     )
+    report_progress(94, "生成 JS 日报底稿")
+    build_js_daily_workbook(js_daily_metrics, js_daily_workbook_path)
     report_progress(96, "生成点评文本")
     commentary = build_daily_commentary(
         run_date,
@@ -10115,6 +10719,7 @@ def run(
         "报告字体": font.get_name(),
         "报告配色": {"红": RED, "蓝": BLUE},
         "Excel底稿": str(workbook_path),
+        "JS日报底稿": str(js_daily_workbook_path),
         "日报点评": str(commentary_path),
         "Word报告": str(word_report_path),
         "富国日报图片": str(fuguo_daily_png),
